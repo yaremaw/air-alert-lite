@@ -14,6 +14,21 @@ destroys yours. Every map is generated; all names are fictional.
 Windows may warn that the app is from an unknown publisher (it is not signed):
 choose *More info → Run anyway*.
 
+## Play (macOS)
+
+1. Download `AirAlert-macos.zip` from the [Releases](../../releases) page and
+   unzip it (Apple Silicon and Intel Macs, macOS 11 or newer).
+2. The app is not notarized by Apple, so the first time macOS will refuse to
+   open it. Either right-click (Control-click) `Air Alert.app` → *Open* →
+   *Open*, or, if there is no *Open* button, go to *System Settings → Privacy &
+   Security* and click *Open Anyway* next to "Air Alert".
+3. If macOS says the app "is damaged", run this once in Terminal (adjust the
+   path to where you unzipped it):
+
+   ```
+   xattr -dr com.apple.quarantine ~/Downloads/"Air Alert.app"
+   ```
+
 ## Controls
 
 | Key | Action |
