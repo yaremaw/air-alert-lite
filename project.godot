@@ -12,7 +12,11 @@ config_version=5
 
 config/name="Air Alert"
 run/main_scene="res://scenes/LiteMain.tscn"
-config/features=PackedStringArray("4.6", "C#", "GL Compatibility")
+config/features=PackedStringArray("4.6", "GL Compatibility")
+
+[autoload]
+
+FunplayMcpRuntimeBridge="*res://addons/funplay_mcp_bridge.gd"
 
 [display]
 
@@ -21,9 +25,9 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
-[dotnet]
+[editor_plugins]
 
-project/assembly_name="AirAlertLite"
+enabled=PackedStringArray("res://addons/funplay_mcp/plugin.cfg")
 
 [rendering]
 

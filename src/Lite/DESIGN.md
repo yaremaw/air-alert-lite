@@ -88,7 +88,7 @@ from a seed; all names are fictional.
 
 ## Rules for changes
 - Keep it simple: every addition must create a decision for the player.
-- Numbers live in `LiteRules` (LiteSim.cs).
+- Numbers live in `LiteRules` (LiteRules.gd).
 - Checks: `--lite-sim=SECONDS --lite-seeds=N` (headless, AI against AI) and
   `--lite-shot=DIR` (self-closing screenshots; add `--lite-maps=N` for a picture
   of N maps first).

@@ -56,11 +56,23 @@ The full rules are in [src/Lite/DESIGN.md](src/Lite/DESIGN.md).
 
 ## Build from source
 
-Needs [Godot 4.6.2 .NET](https://godotengine.org/download) and the .NET 8 SDK.
-Open `project.godot` in Godot and press F5. To export, install the export
-templates and use the *Windows Desktop* preset.
+The game is plain GDScript. Open `project.godot` in [Godot 4.6+](https://godotengine.org/download)
+and press F5. To export, install the export templates and use the *Windows
+Desktop*, *macOS* or *Web* preset. The web build has to be exported with the
+standard (non-.NET) Godot editor; it is single-threaded, so it needs no special
+server headers.
+
+## Play in the browser
+
+https://air-alert-beta.vercel.app
 
 ## Credits
 
 Font: [Inter](https://rsms.me/inter/) by Rasmus Andersson, SIL Open Font
 License (`assets/fonts/OFL.txt`).
+
+Air-raid sirens (`alert.wav`, `all_clear.wav`, `ballistic_warning.wav`): cut
+from [Air Raid Alert - Ukraine during russian invasion 2022](https://commons.wikimedia.org/wiki/File:Air_Raid_Alert_-_Ukraine_during_russian_invasion_2022.ogg)
+by Lystopad, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/);
+the edited clips are under the same license. The other sounds are synthesized
+by `tools/make_sounds.py`.
