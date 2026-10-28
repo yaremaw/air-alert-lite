@@ -29,17 +29,14 @@ public partial class LiteMain : Node2D
 	public int HoverRegion = -1;
 	/// The route being drawn with a strike tool: the mouse held down and dragged.
 	public System.Collections.Generic.List<Vector2>? Drawing;
+	/// One of our air defence systems being turned: the mouse held down on it and dragged.
+	public LiteBuilding? Aiming;
 
 	private LiteView? _view;
 	private float _endTimer = -1, _lastCapitalPost = -99;
 	private bool _autoplay;
 	private Vector2? _fakeMouse;
 
-	// Difficulty: Easy, Normal, Hard. Its bigger country is harder to defend,
-	// so from Normal up the enemy gets a little more income to make up for it.
-	private static readonly float[] EnemyIncome = { 0.8f, 1.1f, 1.3f };
-	private static readonly float[] EnemyWarShare = { 0.4f, 0.5f, 0.55f };
-	private static readonly float[] EnemyTempo = { 1.3f, 1f, 0.85f };
 
 	public override void _Ready()
 	{
@@ -96,12 +93,12 @@ public partial class LiteMain : Node2D
 		BuildTool = null;
 		StrikeTool = null;
 		_endTimer = -1;
-		Sim.IncomeScale[1] = EnemyIncome[d];
-		Sim.Ai[1] = new LiteAi(1, Seed + 1, 22f) { WarShare = EnemyWarShare[d], Tempo = EnemyTempo[d], Smart = d > 0, Waves = d > 0, Adaptive = d > 1 };
+		Sim.IncomeScale[1] = LiteRules.EnemyIncome[d];
+		Sim.Ai[1] = new LiteAi(1, Seed + 1, 22f) { Tempo = LiteRules.EnemyTempo[d], Smart = d > 0, Waves = d > 0, Adaptive = d > 1 };
 		if (_autoplay) Sim.Ai[0] = new LiteAi(0, Seed + 2, 30f);
 		Ui.CloseMenu();
 		Ui.ClearFeed();
-		Ui.Post($"War. The enemy capital is {Map.CapitalName[1]}; its factories repair it. Its other sites are hidden: drones will find them.", LiteGlyphs.Muted);
+		Ui.Post($"War. Destroy {LiteRules.KeysToWin} of the 4 key targets round {Map.CapitalName[1]}: their armor shrugs off drones. Its other sites are hidden: drones will find them.", LiteGlyphs.Muted);
 		Audio.Click();
 	}
 
@@ -140,6 +137,16 @@ public partial class LiteMain : Node2D
 	{
 		Mouse = _fakeMouse ?? GetGlobalMousePosition();
 		UpdateHover();
+		if (Aiming != null && !Input.IsMouseButtonPressed(MouseButton.Left))
+		{
+			// Let go: the radar turns towards where the mouse is.
+			if (Aiming.Alive && Mouse.DistanceTo(Aiming.Pos) > 10)
+			{
+				Aiming.TargetFacing = (Mouse - Aiming.Pos).Angle();
+				Audio.Play("click.wav", -6f);
+			}
+			Aiming = null;
+		}
 		if (Drawing != null)
 		{
 			if (StrikeTool == null || Ui.MenuOpen) Drawing = null;
@@ -206,8 +213,10 @@ public partial class LiteMain : Node2D
 			{
 				case Key.Space: if (Paused) SetSpeed(Speed); else Paused = true; break;
 				case Key.Key1: SelectBuild(LiteKind.Factory); break;
-				case Key.Key2: SelectBuild(LiteKind.Gun); break;
-				case Key.Key3: SelectBuild(LiteKind.Sam); break;
+				case Key.Key2: SelectBuild(LiteKind.Ad); break;
+				case Key.A: Enqueue(LiteArm.Drone, k.ShiftPressed ? 5 : 1); break;
+				case Key.S: Enqueue(LiteArm.Cruise, k.ShiftPressed ? 5 : 1); break;
+				case Key.D: Enqueue(LiteArm.Ballistic, k.ShiftPressed ? 5 : 1); break;
 				case Key.Q: SelectStrike(LiteArm.Drone); break;
 				case Key.W: SelectStrike(LiteArm.Cruise); break;
 				case Key.E: SelectStrike(LiteArm.Ballistic); break;
@@ -220,9 +229,11 @@ public partial class LiteMain : Node2D
 			if (mb.ButtonIndex == MouseButton.Right) { BuildTool = null; StrikeTool = null; Drawing = null; }
 			else if (mb.ButtonIndex == MouseButton.Left)
 			{
-				if (BuildTool != null) TryBuild(mb.ShiftPressed);
+				if (BuildTool != null) TryBuild();
 				// Press starts a route; letting go launches (see _Process).
 				else if (StrikeTool != null) Drawing = new() { GetGlobalMousePosition() };
+				// Press on our own air defence and drag to turn its radar.
+				else if (HoverBuilding is { Side: 0, IsAd: true, Ready: true } ad) Aiming = ad;
 				else return;
 			}
 			else return;
@@ -230,7 +241,9 @@ public partial class LiteMain : Node2D
 		}
 	}
 
-	private void TryBuild(bool keep)
+	/// The tool stays in hand after building, so several sites go down one
+	/// click each; right-click, Esc or its button again puts it down.
+	private void TryBuild()
 	{
 		var k = BuildTool!.Value;
 		if (Sim.Sides[0].Money < Sim.Cost(0, k)) { Refuse($"Not enough money: {LiteGlyphs.Name(k)} costs ${Sim.Cost(0, k)}"); return; }
@@ -241,13 +254,12 @@ public partial class LiteMain : Node2D
 			if (Sim.FreeSlots(r) <= 0) { Refuse($"No room for a factory in {Map.Regions[r].Name}"); return; }
 			if (Sim.BuildFactory(0, r) == null) { Refuse($"No free ground in {Map.Regions[r].Name}"); return; }
 			Audio.Play("click.wav", -3f);
-			if (!keep) BuildTool = null;
 			return;
 		}
 		if (!Sim.CanPlace(0, Mouse)) { Refuse("Build on your own territory, a little away from other sites"); return; }
+		if (!Sim.AdRoom(Mouse)) { Refuse($"{RegionName(Map.RegionAt(Mouse))} already has {LiteRules.AdPerRegion} air defence sites, the most a region can hold"); return; }
 		Sim.Build(0, k, Mouse);
 		Audio.Play("click.wav", -3f);
-		if (!keep) BuildTool = null;
 	}
 
 	/// A click launches straight at the target; a drag is the route there,
@@ -267,11 +279,18 @@ public partial class LiteMain : Node2D
 	{
 		var a = StrikeTool!.Value;
 		if (Map.SideAt(StrikeTarget) != 1) { Refuse("Pick a target on enemy territory"); return; }
-		int n = Salvo;
-		if (Sim.Sides[0].Money < LiteRules.Cost(a))  { Refuse($"Not enough money: a {LiteGlyphs.Name(a).ToLowerInvariant()} costs ${LiteRules.Cost(a)}"); return; }
-		while (n > 1 && Sim.Sides[0].Money < LiteRules.Cost(a) * n) n--;
+		int n = Math.Min(Salvo, Sim.Sides[0].Production.Stock[(int)a]);
+		if (n <= 0) { Refuse($"No {LiteGlyphs.Plural(a, 2)} in stock: queue some under PRODUCTION"); return; }
 		Sim.Strike(0, a, StrikeTarget, n, null, 0f, route);
 		Audio.Play("click.wav", -3f);
+	}
+
+	/// Queues `n` weapons of one kind for production.
+	public void Enqueue(LiteArm a, int n)
+	{
+		if (!Started || Sim.Winner >= 0) return;
+		if (Sim.Sides[0].Production.Add(a, n) == 0) { Refuse($"The queue is full ({LiteRules.QueueMax})"); return; }
+		Audio.Click();
 	}
 
 	private void Refuse(string why)
@@ -327,14 +346,22 @@ public partial class LiteMain : Node2D
 					bool onUs = e.Side == 1;
 					Audio.Play(e.Arm == LiteArm.Drone ? "explosion_small_a.wav" : "explosion_a.wav", onUs ? -7f : -15f, 0.06);
 					break;
-				case LiteEv.CapitalHit:
+				case LiteEv.KeyHit:
 					if (Sim.Time - _lastCapitalPost < 4) break;
 					_lastCapitalPost = Sim.Time;
-					if (e.Side == 0) Ui.Post($"{Map.CapitalName[0]} is hit! {e.Value:0}/{LiteRules.MaxHp(LiteKind.Capital):0} left.", LiteGlyphs.Enemy);
-					else Ui.Post($"Hit on {Map.CapitalName[1]}: {e.Value:0}/{LiteRules.MaxHp(LiteKind.Capital):0} left.", LiteGlyphs.Ours);
+					if (e.Side == 0) Ui.Post($"Our {LiteGlyphs.Name(e.Kind)} in {Map.CapitalName[0]} is hit: {e.Value:0}/{LiteRules.MaxHp(e.Kind):0} left.", LiteGlyphs.Enemy);
+					else Ui.Post($"Hit on the enemy {LiteGlyphs.Name(e.Kind)}: {e.Value:0}/{LiteRules.MaxHp(e.Kind):0} left.", LiteGlyphs.Ours);
 					break;
 				case LiteEv.Destroyed:
-					if (e.Kind == LiteKind.Capital) break;
+					if (LiteRules.KeysToWin > e.Value && e.Kind >= LiteKind.Hq)
+					{
+						int more = LiteRules.KeysToWin - (int)e.Value;
+						if (e.Side == 0) Ui.Post($"Our {LiteGlyphs.Name(e.Kind)} is destroyed! {more} more and {Map.CapitalName[0]} falls.", LiteGlyphs.Enemy);
+						else Ui.Post($"The enemy {LiteGlyphs.Name(e.Kind)} is destroyed! {more} more key target{(more == 1 ? "" : "s")} to go.", LiteGlyphs.Good);
+						Audio.Play("explosion_b.wav", -6f, 0.5);
+						break;
+					}
+					if (e.Kind >= LiteKind.Hq) break;
 					if (e.Side == 0) Ui.Post($"Our {LiteGlyphs.Name(e.Kind)} destroyed in {RegionName(e.Region)}.", LiteGlyphs.Enemy);
 					else Ui.Post($"Enemy {LiteGlyphs.Name(e.Kind)} destroyed in {RegionName(e.Region)}.", LiteGlyphs.Good);
 					Audio.Play("wreck.wav", -9f, 0.2);
@@ -381,7 +408,7 @@ public partial class LiteMain : Node2D
 	{
 		var me = Sim.Sides[0];
 		bool won = Sim.Winner == 0;
-		string stats = $"{Map.CapitalName[won ? 1 : 0]} has fallen after {LiteHud.Duration(Sim.Time)} of war.\n\n" +
+		string stats = $"{Map.CapitalName[won ? 1 : 0]} has fallen after {LiteHud.Duration(Sim.Time)} of war: {LiteRules.KeysToWin} of its key targets are destroyed.\n\n" +
 			$"Enemy weapons shot down: {me.Downed}\n" +
 			$"Our hits on enemy sites: {me.Hits}\n" +
 			$"Enemy sites destroyed: {me.Destroyed}\n" +
@@ -423,9 +450,9 @@ public partial class LiteMain : Node2D
 		{
 			var sd = s.Sides[i];
 			int f = s.Buildings.Count(b => b.Alive && b.Side == i && b.Kind == LiteKind.Factory);
-			int g = s.Buildings.Count(b => b.Alive && b.Side == i && b.Kind == LiteKind.Gun);
-			int m = s.Buildings.Count(b => b.Alive && b.Side == i && b.Kind == LiteKind.Sam);
-			return $"${sd.Money:0} +{sd.Income:0.0} f{f} g{g} s{m} cap{sd.Capital.Hp:0} launched{sd.Launched} hits{sd.Hits} downed{sd.Downed}";
+			int ad = s.Buildings.Count(b => b.Alive && b.Side == i && b.IsAd);
+			var st = sd.Production.Stock;
+			return $"${sd.Money:0} +{sd.Income:0.0} {sd.Production.Rate:0.0}pp f{f} ad{ad} stock{st[0]}/{st[1]}/{st[2]} keys{4 - sd.KeysLost} launched{sd.Launched} hits{sd.Hits} downed{sd.Downed}";
 		}
 		return $"t={s.Time:0} W[{Side(0)}] E[{Side(1)}] air{s.Weapons.Count}";
 	}
@@ -479,7 +506,7 @@ public partial class LiteMain : Node2D
 		Engine.TimeScale = 4;
 		await Until(() => Sim.Winner >= 0 || Sim.Time > 320);
 		Engine.TimeScale = 1;
-		BuildTool = LiteKind.Sam;
+		BuildTool = LiteKind.Ad;
 		_fakeMouse = Map.Capital[0] + new Vector2(-60, 40);
 		await Wait(0.6);
 		await Shot("3_later.png");
@@ -507,13 +534,13 @@ public partial class LiteMain : Node2D
 		var rng = new Random(5);
 		for (int side = 0; side < 2; side++)
 		{
-			Sim.Sides[side].Money += 100000;
+			for (int i = 0; i < 3; i++) Sim.Sides[side].Production.Stock[i] += 200;
 			for (int i = 0; i < 6; i++)
 			{
 				Sim.Strike(side, LiteArm.Drone, Sim.RandomSpot(1 - side, rng), 14);
 				Sim.Strike(side, LiteArm.Cruise, Sim.RandomSpot(1 - side, rng), 4);
 			}
-			Sim.Strike(side, LiteArm.Ballistic, Sim.Sides[1 - side].Capital.Pos, 4, null, 6f);
+			Sim.Strike(side, LiteArm.Ballistic, Sim.Sides[1 - side].Center, 4, null, 6f);
 		}
 		for (int i = 0; i < 40; i++) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
 		await Measure("crowded sky", 3);

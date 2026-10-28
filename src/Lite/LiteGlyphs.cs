@@ -1,7 +1,7 @@
 using System;
 using Godot;
 
-public enum LiteGlyph { Capital, Factory, Gun, Sam, Drone, Cruise, Ballistic }
+public enum LiteGlyph { Capital, Factory, Gun, Sam, Drone, Cruise, Ballistic, Bunker, Energy, Gov }
 
 /// Colours, fonts, names and the small flat icons of the lite game. Icons are
 /// polygons, so the same glyph serves the map and the buttons at any size.
@@ -57,7 +57,14 @@ public static class LiteGlyphs
 
 	public static string Name(LiteKind k) => k switch
 	{
-		LiteKind.Capital => "Capital", LiteKind.Factory => "Factory", LiteKind.Gun => "AA gun", _ => "SAM",
+		LiteKind.Factory => "Factory", LiteKind.Ad => "Air defence", LiteKind.Hq => "Headquarters",
+		LiteKind.Bunker => "Command bunker", LiteKind.Energy => "Energy centre", _ => "Government building",
+	};
+
+	/// Short names of the key targets, for the status panel.
+	public static string Short(LiteKind k) => k switch
+	{
+		LiteKind.Hq => "HQ", LiteKind.Bunker => "Bunker", LiteKind.Energy => "Energy", LiteKind.Gov => "Gov", _ => Name(k),
 	};
 
 	public static string Name(LiteArm a) => a switch
@@ -74,7 +81,8 @@ public static class LiteGlyphs
 
 	public static LiteGlyph Of(LiteKind k) => k switch
 	{
-		LiteKind.Capital => LiteGlyph.Capital, LiteKind.Factory => LiteGlyph.Factory, LiteKind.Gun => LiteGlyph.Gun, _ => LiteGlyph.Sam,
+		LiteKind.Factory => LiteGlyph.Factory, LiteKind.Ad => LiteGlyph.Sam, LiteKind.Hq => LiteGlyph.Capital,
+		LiteKind.Bunker => LiteGlyph.Bunker, LiteKind.Energy => LiteGlyph.Energy, _ => LiteGlyph.Gov,
 	};
 
 	public static LiteGlyph Of(LiteArm a) => a switch
@@ -99,6 +107,16 @@ public static class LiteGlyphs
 		new(-2, 4.5f), new(0, 1.3f), new(4, 1.3f),
 	};
 	private static readonly Vector2[] StarPts = Star();
+	private static readonly Vector2[] BunkerPts =
+	{
+		new(-5.5f, 3.5f), new(5.5f, 3.5f), new(5.5f, 1.5f), new(4f, -1.5f), new(2f, -3.5f), new(0, -4f), new(-2f, -3.5f), new(-4f, -1.5f), new(-5.5f, 1.5f),
+	};
+	private static readonly Vector2[] EnergyPts = { new(1.5f, -5.5f), new(-3.5f, 0.8f), new(-0.3f, 0.8f), new(-1.5f, 5.5f), new(3.5f, -0.8f), new(0.3f, -0.8f) };
+	private static readonly Vector2[] GovPts =
+	{
+		new(-5.5f, -1.5f), new(0, -5f), new(5.5f, -1.5f), new(4.5f, -1.5f), new(4.5f, 3f), new(5.5f, 3f), new(5.5f, 4.5f),
+		new(-5.5f, 4.5f), new(-5.5f, 3f), new(-4.5f, 3f), new(-4.5f, -1.5f),
+	};
 
 	private static Vector2[] Star()
 	{
@@ -117,6 +135,9 @@ public static class LiteGlyphs
 		switch (g)
 		{
 			case LiteGlyph.Capital: Poly(ci, StarPts, c, s, angle, col, outline); break;
+			case LiteGlyph.Bunker: Poly(ci, BunkerPts, c, s, angle, col, outline); break;
+			case LiteGlyph.Energy: Poly(ci, EnergyPts, c, s, angle, col, outline); break;
+			case LiteGlyph.Gov: Poly(ci, GovPts, c, s, angle, col, outline); break;
 			case LiteGlyph.Factory: Poly(ci, FactoryPts, c, s, angle, col, outline); break;
 			case LiteGlyph.Sam: Poly(ci, SamPts, c, s, angle, col, outline); break;
 			case LiteGlyph.Drone: Poly(ci, DronePts, c, s, angle, col, outline); break;
@@ -148,6 +169,9 @@ public static class LiteGlyphs
 		switch (g)
 		{
 			case LiteGlyph.Capital: b.Shape(StarPts, Cut(StarPts), c, s, angle, col, outline); break;
+			case LiteGlyph.Bunker: b.Shape(BunkerPts, Cut(BunkerPts), c, s, angle, col, outline); break;
+			case LiteGlyph.Energy: b.Shape(EnergyPts, Cut(EnergyPts), c, s, angle, col, outline); break;
+			case LiteGlyph.Gov: b.Shape(GovPts, Cut(GovPts), c, s, angle, col, outline); break;
 			case LiteGlyph.Factory: b.Shape(FactoryPts, Cut(FactoryPts), c, s, angle, col, outline); break;
 			case LiteGlyph.Sam: b.Shape(SamPts, Cut(SamPts), c, s, angle, col, outline); break;
 			case LiteGlyph.Drone: b.Shape(DronePts, Cut(DronePts), c, s, angle, col, outline); break;

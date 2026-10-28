@@ -2,70 +2,36 @@ using System;
 using System.Collections.Generic;
 using Godot;
 
-public enum LiteKind { Capital, Factory, Gun, Sam }
+public enum LiteKind { Factory, Ad, Hq, Bunker, Energy, Gov }
 public enum LiteArm { Drone, Cruise, Ballistic }
-public enum LiteEv { RaidAlert, AllClear, Launch, Detected, ShotDown, Hit, CapitalHit, Destroyed, Built, Spotted, RaidOver, GameOver, Industry, Warning }
+public enum LiteEv { RaidAlert, AllClear, Launch, Detected, ShotDown, Hit, KeyHit, Destroyed, Built, Spotted, RaidOver, GameOver, Industry, Warning }
 public enum LiteFxKind { Blast, Scorch, Pop, Puff, Tracer, Launch }
-
-/// Every number of the lite game in one place.
-public static class LiteRules
-{
-	public const float StartMoney = 320f, CapitalIncome = 3f, FactoryIncome = 4f, AlertWork = 0.5f;
-	/// Capital health each working factory puts back per second, and the most all of them can.
-	public const float CapitalRepair = 0.04f, MaxRepair = 0.3f;
-	/// Every factory a side already has makes the next one this much dearer.
-	public const int FactoryStep = 20;
-	/// A destroyed factory leaves ruins that take its place in the region this long.
-	public const float RuinTime = 180f;
-	/// How often industry shifts between regions on each side.
-	public const float IndustryShift = 120f;
-	/// How often each side's intelligence locates one hidden site of the other's.
-	public const float IntelEvery = 75f;
-	public const int InterceptorCost = 10, SamRack = 6;
-	public const float SamReload = 3.5f, SamInterval = 0.7f, GunInterval = 0.45f, InterceptorSpeed = 330f;
-	public const float AllClearAfter = 3f;
-
-	public static int Cost(LiteKind k) => k switch { LiteKind.Factory => 130, LiteKind.Gun => 70, LiteKind.Sam => 240, _ => 0 };
-	public static float BuildTime(LiteKind k) => k switch { LiteKind.Factory => 8f, LiteKind.Gun => 4f, LiteKind.Sam => 7f, _ => 0f };
-	public static float MaxHp(LiteKind k) => k switch { LiteKind.Capital => 120f, LiteKind.Factory => 5f, LiteKind.Gun => 2f, _ => 3f };
-	/// A capital has AA guns of its own, a little shorter-ranged than a gun site.
-	public static float Range(LiteKind k) => k switch { LiteKind.Gun => 58f, LiteKind.Sam => 125f, LiteKind.Capital => 50f, _ => 0f };
-
-	public static int Cost(LiteArm a) => a switch { LiteArm.Drone => 12, LiteArm.Cruise => 55, _ => 130 };
-	public static float Speed(LiteArm a) => a switch { LiteArm.Drone => 26f, LiteArm.Cruise => 72f, _ => 220f };
-	public static float Damage(LiteArm a) => a switch { LiteArm.Drone => 1f, LiteArm.Cruise => 2f, _ => 3f };
-	public static float Blast(LiteArm a) => a switch { LiteArm.Drone => 12f, LiteArm.Cruise => 16f, _ => 21f };
-	public static float Scatter(LiteArm a) => a switch { LiteArm.Drone => 5f, LiteArm.Cruise => 3f, _ => 8f };
-	public static float SamPk(LiteArm a) => a switch { LiteArm.Drone => 0.9f, LiteArm.Cruise => 0.8f, _ => 0.45f };
-	public static float GunPk(LiteArm a) => a switch { LiteArm.Drone => 0.25f, LiteArm.Cruise => 0.08f, _ => 0f };
-	/// How far round itself a weapon in flight reveals the other side's sites.
-	public static float SpotRadius(LiteArm a) => a switch { LiteArm.Drone => 46f, LiteArm.Cruise => 26f, _ => 0f };
-	/// Regions within this distance of a drone or cruise missile go under alert...
-	public static float AlertRadius(LiteArm a) => a switch { LiteArm.Drone => 30f, LiteArm.Cruise => 34f, _ => 0f };
-	/// ...and so do those it would reach in this many seconds if it kept its
-	/// heading. Nobody on the ground knows its route.
-	public static float Heading(LiteArm a) => a switch { LiteArm.Drone => 4f, LiteArm.Cruise => 3f, _ => 0f };
-}
 
 public sealed class LiteBuilding
 {
-	public int Id, Side, Region, Ammo;
+	public int Id, Side, Region;
 	public LiteKind Kind;
 	public Vector2 Pos;
-	public float Hp, MaxHp, Build, BuildTotal, Cool, Reload, DeadAt, Flash, FireFlash;
+	public float Hp, MaxHp, Build, BuildTotal, DeadAt, Flash, FireFlash;
+	/// Air defence: where its radar sector faces now and where it is turning
+	/// to (radians), what each channel is tracking, and its time to the next shot.
+	public float Facing, TargetFacing;
+	public readonly LiteWeapon?[] Tracks = new LiteWeapon?[LiteRules.AdChannels];
+	public readonly float[] ChannelCool = new float[LiteRules.AdChannels];
 	/// Weapons it has shot down; a sharp enemy goes for the busiest air defence.
 	public int Kills;
 	public bool Alive = true;
 	public readonly bool[] Seen = new bool[2];
 	public bool Ready => Build <= 0f;
-	public bool IsAd => Kind == LiteKind.Gun || Kind == LiteKind.Sam;
-	/// Shoots like an AA gun: gun sites and the capital's own guns.
-	public bool IsGun => Kind == LiteKind.Gun || Kind == LiteKind.Capital;
+	public bool IsAd => Kind == LiteKind.Ad;
+	/// One of the four key targets round a capital.
+	public bool IsKey => Kind >= LiteKind.Hq;
+	public float Armor => LiteRules.Armor(Kind);
 }
 
 public sealed class LiteWeapon
 {
-	public int Id, Side, Leg, Engaged;
+	public int Id, Side, Leg;
 	public LiteArm Arm;
 	public LiteRaid Raid = null!;
 	public Vector2 Pos, Start, Target, Dir;
@@ -126,8 +92,16 @@ public struct LiteEvent
 public sealed class LiteSide
 {
 	public readonly int Index;
-	public float Money = LiteRules.StartMoney, Income, Repair, WarFund, LastRaidLoss;
-	public LiteBuilding Capital = null!;
+	public float Money = LiteRules.StartMoney, Income, LastRaidLoss;
+	/// Weapons are built here, from production points; strikes take from its stock.
+	public readonly LiteProduction Production = new();
+	/// Damaged buildings are repaired for money while this is on; `RepairSpend` is $ a second.
+	public bool Repairing = true;
+	public float RepairSpend;
+	/// The capital's middle, and the four key targets round it.
+	public Vector2 Center;
+	public readonly List<LiteBuilding> Keys = new();
+	public int KeysLost;
 	public int Launched, Hits, Downed, Lost, Destroyed;
 	/// Where the other side's weapons came down on our land lately (the AI defends there).
 	public readonly List<(Vector2 P, float T)> HitLog = new();
@@ -135,11 +109,13 @@ public sealed class LiteSide
 }
 
 /// The whole lite game: two sides with the same rules. Factories earn money
-/// and repair the capital; guns and SAMs shoot down what flies into range;
-/// drones and missiles fly to where they were sent and damage what is there.
-/// Regions go under air alert where a weapon is and where it is heading, and
-/// factories under alert work at a third of their pace. Destroying a capital
-/// ends the game.
+/// and production points; the points build weapons into a stockpile, the
+/// money pays for factories, air defence and repairs. Air defence shoots down
+/// what flies into range; drones and missiles fly to where they were sent and
+/// damage what is there. Regions go under air alert where a weapon is and
+/// where it is heading, and factories under alert work at half their pace.
+/// Each capital has four armored key targets; destroying KeysToWin of the
+/// other side's wins the war.
 public sealed class LiteSim
 {
 	public readonly LiteMap Map;
@@ -150,7 +126,7 @@ public sealed class LiteSim
 	public readonly List<LiteFx> Fx = new();
 	public readonly List<LiteEvent> Events = new();
 	public readonly LiteAi?[] Ai = new LiteAi?[2];
-	public readonly bool[] SamsOnDrones = { true, true };
+	/// Difficulty: scales a side's money and production.
 	public readonly float[] IncomeScale = { 1f, 1f };
 	public float Time;
 	public int Winner = -1;
@@ -163,8 +139,10 @@ public sealed class LiteSim
 	private readonly bool[] _threat, _bal;
 
 	private readonly Random _rng;
+	private readonly LiteAirDefence _ad;
 	private readonly List<Pending> _queue = new();
 	private readonly List<LiteRegion> _tmp = new();
+	private readonly List<LiteArm> _done = new();
 	private int _ids, _raids;
 	private float _alertTick;
 
@@ -185,6 +163,8 @@ public sealed class LiteSim
 		Alert = new bool[n]; Ballistic = new bool[n]; AlertSince = new float[n]; RegionFlash = new float[n];
 		_quiet = new float[n]; _balQuiet = new float[n]; _threat = new bool[n]; _bal = new bool[n];
 		Slots = new int[n];
+		_ad = new LiteAirDefence(this, _rng);
+		for (int s = 0; s < 2; s++) Sides[s].Center = Map.Capital[s];
 		for (int s = 0; s < 2; s++) InitSlots(s);
 		EvenSlots();
 		for (int s = 0; s < 2; s++) Setup(s);
@@ -194,19 +174,29 @@ public sealed class LiteSim
 
 	private void Setup(int side)
 	{
-		var cap = Add(side, LiteKind.Capital, Map.Capital[side], true);
-		Sides[side].Capital = cap;
-		cap.Seen[1 - side] = true;
-		var sam = FindSpot(side, Map.Capital[side], 14, 26);
-		if (sam != null) Add(side, LiteKind.Sam, sam.Value, true);
-		// Two factories to start with, one guarded by a gun.
+		var me = Sides[side];
+		// The key targets on a ring round the capital, the other side knows where.
+		var kinds = new[] { LiteKind.Hq, LiteKind.Bunker, LiteKind.Energy, LiteKind.Gov };
+		float turn = (float)_rng.NextDouble() * MathF.Tau;
+		for (int i = 0; i < 4; i++)
+		{
+			var want = me.Center + new Vector2(LiteRules.KeyRing, 0).Rotated(turn + i * MathF.Tau / 4);
+			var p = CanPlace(side, want) ? want : FindSpot(side, want, 2, 16) ?? FindSpot(side, me.Center, 14, 40);
+			if (p == null) continue;
+			var key = Add(side, kinds[i], p.Value, true);
+			key.Seen[1 - side] = true;
+			me.Keys.Add(key);
+		}
+		for (int i = 0; i < 2; i++)
+		{
+			var ad = FindSpot(side, me.Center, 30, 55, true);
+			if (ad != null) Add(side, LiteKind.Ad, ad.Value, true);
+		}
+		// Two factories to start with.
 		for (int i = 0; i < 2; i++)
 		{
 			var factory = FindSpot(side, Map.Capital[side], 55 + 40 * i, 110 + 50 * i);
-			if (factory == null) continue;
-			Add(side, LiteKind.Factory, factory.Value, true);
-			var gun = i == 0 ? FindSpot(side, factory.Value, 14, 28) : null;
-			if (gun != null) Add(side, LiteKind.Gun, gun.Value, true);
+			if (factory != null) Add(side, LiteKind.Factory, factory.Value, true);
 		}
 	}
 
@@ -221,14 +211,34 @@ public sealed class LiteSim
 		return true;
 	}
 
-	/// The price of a building for a side: factories get dearer the more it has.
+	/// The price of a building for a side: every factory costs FactoryGrowth
+	/// times the one before, every air defence system AdStep more.
 	public int Cost(int side, LiteKind kind)
 	{
-		int cost = LiteRules.Cost(kind);
-		if (kind == LiteKind.Factory)
-			foreach (var b in Buildings)
-				if (b.Alive && b.Side == side && b.Kind == LiteKind.Factory) cost += LiteRules.FactoryStep;
-		return cost;
+		int n = 0;
+		foreach (var b in Buildings)
+			if (b.Alive && b.Side == side && b.Kind == kind) n++;
+		return kind switch
+		{
+			LiteKind.Factory => (int)(LiteRules.FactoryCost * MathF.Pow(LiteRules.FactoryGrowth, n)),
+			LiteKind.Ad => LiteRules.AdCost + LiteRules.AdStep * n,
+			_ => 0,
+		};
+	}
+
+	/// Air defence sites standing (or being built) in a region.
+	public int AdIn(int region)
+	{
+		int n = 0;
+		foreach (var b in Buildings) if (b.Alive && b.IsAd && b.Region == region) n++;
+		return n;
+	}
+
+	/// Room for one more air defence site at `p`.
+	public bool AdRoom(Vector2 p)
+	{
+		byte r = Map.RegionAt(p);
+		return r != LiteMap.None && AdIn(r) < LiteRules.AdPerRegion;
 	}
 
 	/// Front regions get 2 or 3 places for factories, the middle 1 or 2, the
@@ -313,7 +323,7 @@ public sealed class LiteSim
 		var hidden = new List<LiteBuilding>();
 		for (int viewer = 0; viewer < 2; viewer++)
 		{
-			foreach (var kind in new[] { LiteKind.Factory, LiteKind.Sam, LiteKind.Gun })
+			foreach (var kind in new[] { LiteKind.Factory, LiteKind.Ad })
 			{
 				hidden.Clear();
 				foreach (var b in Buildings)
@@ -358,6 +368,7 @@ public sealed class LiteSim
 	public LiteBuilding? Build(int side, LiteKind kind, Vector2 p)
 	{
 		if (kind == LiteKind.Factory) return BuildFactory(side, Map.RegionAt(p));
+		if (!AdRoom(p)) return null;
 		int cost = Cost(side, kind);
 		if (Sides[side].Money < cost || !CanPlace(side, p)) return null;
 		Sides[side].Money -= cost;
@@ -370,8 +381,9 @@ public sealed class LiteSim
 		{
 			Id = ++_ids, Side = side, Kind = kind, Pos = p, Region = Map.RegionAt(p),
 			MaxHp = LiteRules.MaxHp(kind), BuildTotal = LiteRules.BuildTime(kind),
-			Ammo = kind == LiteKind.Sam ? LiteRules.SamRack : 0,
 		};
+		// Air defence first faces the other side's capital.
+		if (kind == LiteKind.Ad) b.Facing = b.TargetFacing = (Sides[1 - side].Center - p).Angle();
 		b.Hp = b.MaxHp;
 		b.Build = instant ? 0 : b.BuildTotal;
 		b.Seen[side] = true;
@@ -379,13 +391,12 @@ public sealed class LiteSim
 		return b;
 	}
 
-	/// Sends `count` weapons of one kind at `target`, launched a moment apart,
-	/// along `route` if given (drones and cruise missiles; ballistic ones fly straight).
+	/// Sends `count` weapons of one kind from the stockpile at `target`,
+	/// launched a moment apart, along `route` if given (drones and cruise
+	/// missiles; ballistic ones fly straight).
 	public LiteRaid? Strike(int side, LiteArm arm, Vector2 target, int count, LiteRaid? raid = null, float delay = 0f, List<Vector2>? route = null)
 	{
-		int cost = LiteRules.Cost(arm) * count;
-		if (count <= 0 || Sides[side].Money < cost) return null;
-		Sides[side].Money -= cost;
+		if (!Sides[side].Production.Take(arm, count)) return null;
 		raid ??= new LiteRaid { Id = ++_raids, Side = side, Target = target };
 		raid.Total += count;
 		raid.ByArm[(int)arm] += count;
@@ -395,13 +406,14 @@ public sealed class LiteSim
 		return raid;
 	}
 
-	public Vector2? FindSpot(int side, Vector2 near, float rMin, float rMax)
+	/// A free place near `near`; for air defence (`ad`), in a region with room for it.
+	public Vector2? FindSpot(int side, Vector2 near, float rMin, float rMax, bool ad = false)
 	{
 		for (int i = 0; i < 80; i++)
 		{
 			float a = (float)_rng.NextDouble() * MathF.Tau, r = rMin + (float)_rng.NextDouble() * (rMax - rMin);
 			var p = near + new Vector2(r, 0).Rotated(a);
-			if (CanPlace(side, p)) return p;
+			if (CanPlace(side, p) && (!ad || AdRoom(p))) return p;
 		}
 		return null;
 	}
@@ -414,23 +426,23 @@ public sealed class LiteSim
 		return pick.Spots[rng.Next(pick.Spots.Count)];
 	}
 
-	/// How well a point is covered by one side's ready air defence (gun 1, SAM 2).
-	/// Air defence of the other side that `viewer` knows about, round a point (gun 1, SAM 2).
+	/// Air defence of the other side that `viewer` knows about whose sector
+	/// covers a point (2 for each system).
 	public float KnownCoverage(int viewer, Vector2 p)
 	{
 		float c = 0;
 		foreach (var b in Buildings)
-			if (b.Alive && b.Side != viewer && (b.IsAd || b.IsGun) && b.Seen[viewer] && b.Pos.DistanceTo(p) <= LiteRules.Range(b.Kind))
-				c += b.Kind == LiteKind.Sam ? 2 : 1;
+			if (b.Alive && b.Side != viewer && b.IsAd && b.Seen[viewer] && LiteAirDefence.InSector(b, p)) c += 2;
 		return c;
 	}
 
+	/// How well a point is covered by the sectors of one side's own air
+	/// defence (2 for each system).
 	public float Coverage(int side, Vector2 p)
 	{
 		float c = 0;
 		foreach (var b in Buildings)
-			if (b.Alive && b.Side == side && b.IsAd && b.Pos.DistanceTo(p) <= LiteRules.Range(b.Kind))
-				c += b.Kind == LiteKind.Sam ? 2 : 1;
+			if (b.Alive && b.Side == side && b.IsAd && LiteAirDefence.InSector(b, p)) c += 2;
 		return c;
 	}
 
@@ -445,8 +457,7 @@ public sealed class LiteSim
 			if (_queue[i].At <= Time) { var p = _queue[i]; _queue.RemoveAt(i); Launch(p); }
 		MoveWeapons(dt);
 		Detect();
-		AirDefence(dt);
-		MoveInterceptors(dt);
+		_ad.Step(dt);
 		Reveal();
 		_alertTick -= dt;
 		if (_alertTick <= 0) { _alertTick += 0.25f; Alerts(0.25f); }
@@ -473,7 +484,7 @@ public sealed class LiteSim
 	{
 		foreach (var side in Sides)
 		{
-			float income = side.Capital.Alive ? LiteRules.CapitalIncome : 0, work = 0;
+			float work = 0;
 			foreach (var b in Buildings)
 			{
 				if (b.Side != side.Index || !b.Alive) continue;
@@ -486,11 +497,28 @@ public sealed class LiteSim
 				if (b.Kind == LiteKind.Factory)
 					work += (0.4f + 0.6f * b.Hp / b.MaxHp) * (Alert[b.Region] ? LiteRules.AlertWork : 1f);
 			}
-			side.Income = (income + LiteRules.FactoryIncome * work) * IncomeScale[side.Index];
+			float scale = IncomeScale[side.Index];
+			side.Income = (LiteRules.BaseIncome + LiteRules.FactoryIncome * work) * scale;
 			side.Money += side.Income * dt;
-			var cap = side.Capital;
-			side.Repair = cap.Alive && cap.Hp < cap.MaxHp ? Math.Min(LiteRules.MaxRepair, LiteRules.CapitalRepair * work) : 0;
-			if (side.Repair > 0) cap.Hp = Math.Min(cap.MaxHp, cap.Hp + side.Repair * dt);
+			// Production: one queue, every factory working on it.
+			var prod = side.Production;
+			prod.Rate = (LiteRules.BasePP + LiteRules.FactoryPP * work) * scale;
+			_done.Clear();
+			prod.Work(prod.Rate * dt, _done);
+			// Repairs, paid for as they go.
+			float spent = 0;
+			if (side.Repairing)
+				foreach (var b in Buildings)
+				{
+					if (b.Side != side.Index || !b.Alive || !b.Ready || b.Hp >= b.MaxHp) continue;
+					float hp = Math.Min(b.MaxHp * LiteRules.RepairRate * dt, b.MaxHp - b.Hp);
+					float price = hp / b.MaxHp * 100 * LiteRules.RepairPrice;
+					if (side.Money < price) break;
+					side.Money -= price;
+					spent += price;
+					b.Hp += hp;
+				}
+			side.RepairSpend += (spent / Math.Max(dt, 1e-4f) - side.RepairSpend) * Math.Min(1, dt * 2);
 		}
 	}
 
@@ -524,7 +552,7 @@ public sealed class LiteSim
 	/// For a drawn route: a launch site of ours nearest its first point.
 	private Vector2 OriginNear(int side, Vector2 at)
 	{
-		Vector2 best = Sides[side].Capital.Pos;
+		Vector2 best = Sides[side].Center;
 		float bd = float.MaxValue;
 		foreach (var r in Map.Regions)
 		{
@@ -667,7 +695,7 @@ public sealed class LiteSim
 			bool seen = Map.SideAt(w.Pos) == v;
 			if (!seen)
 				foreach (var b in Buildings)
-					if (b.Alive && b.Side == v && b.IsAd && b.Ready && b.Pos.DistanceTo(w.Pos) < LiteRules.Range(b.Kind) * 1.5f) { seen = true; break; }
+					if (b.Alive && b.Side == v && b.IsAd && b.Ready && b.Pos.DistanceTo(w.Pos) < LiteRules.AdRange * LiteRules.RadarReach) { seen = true; break; }
 			if (!seen) continue;
 			w.Seen[v] = true;
 			Events.Add(new LiteEvent { Type = LiteEv.Detected, Side = w.Side, Arm = w.Arm, Pos = w.Pos, Region = Map.RegionAt(w.Pos), Raid = w.Raid });
@@ -682,13 +710,13 @@ public sealed class LiteSim
 		foreach (var b in Buildings)
 		{
 			if (!b.Alive || b.Side == w.Side) continue;
-			float reach = LiteRules.Blast(arm) + (b.Kind == LiteKind.Capital ? 6 : 0);
-			if (b.Pos.DistanceTo(w.Pos) > reach) continue;
+			if (b.Pos.DistanceTo(w.Pos) > LiteRules.Blast(arm) + (b.IsKey ? 4 : 0)) continue;
 			any = true;
-			b.Hp -= LiteRules.Damage(arm);
+			// Armor takes its share of every hit.
+			b.Hp -= LiteDamage.Dealt(arm, b.Kind);
 			b.Flash = 1;
-			if (b.Kind == LiteKind.Capital && b.Hp > 0)
-				Events.Add(new LiteEvent { Type = LiteEv.CapitalHit, Side = b.Side, Pos = b.Pos, Value = b.Hp, Arm = arm });
+			if (b.IsKey && b.Hp > 0)
+				Events.Add(new LiteEvent { Type = LiteEv.KeyHit, Side = b.Side, Kind = b.Kind, Pos = b.Pos, Value = b.Hp, Arm = arm });
 			if (b.Hp <= 0) Destroy(b, w.Side, w.Raid);
 		}
 		if (any) { w.Raid.Hits++; Sides[w.Side].Hits++; }
@@ -714,15 +742,16 @@ public sealed class LiteSim
 		Sides[by].Destroyed++;
 		string where = b.Region < Map.Regions.Count ? Map.Regions[b.Region].Name : "";
 		raid.Destroyed.Add($"{LiteGlyphs.Name(b.Kind)} in {where}");
-		Events.Add(new LiteEvent { Type = LiteEv.Destroyed, Side = b.Side, Kind = b.Kind, Pos = b.Pos, Region = b.Region });
-		if (b.Kind == LiteKind.Capital && Winner < 0)
+		if (b.IsKey) Sides[b.Side].KeysLost++;
+		Events.Add(new LiteEvent { Type = LiteEv.Destroyed, Side = b.Side, Kind = b.Kind, Pos = b.Pos, Region = b.Region, Value = Sides[b.Side].KeysLost });
+		if (b.IsKey && Sides[b.Side].KeysLost >= LiteRules.KeysToWin && Winner < 0)
 		{
 			Winner = by;
 			Events.Add(new LiteEvent { Type = LiteEv.GameOver, Side = by });
 		}
 	}
 
-	private void Kill(LiteWeapon w, int by, LiteBuilding? shooter)
+	internal void Kill(LiteWeapon w, int by, LiteBuilding? shooter)
 	{
 		w.Alive = false;
 		if (shooter != null) shooter.Kills++;
@@ -741,90 +770,7 @@ public sealed class LiteSim
 		Events.Add(new LiteEvent { Type = LiteEv.RaidOver, Side = raid.Side, Pos = raid.Target, Raid = raid });
 	}
 
-	// ---------------------------------------------------------------- air defence
-
-	private void AirDefence(float dt)
-	{
-		foreach (var b in Buildings)
-		{
-			if (!b.Alive || !(b.IsAd || b.IsGun) || !b.Ready) continue;
-			if (b.Kind == LiteKind.Sam && b.Ammo < LiteRules.SamRack)
-			{
-				b.Reload -= dt;
-				if (b.Reload <= 0) { b.Ammo++; b.Reload = LiteRules.SamReload; }
-			}
-			b.Cool -= dt;
-			if (b.Cool > 0) continue;
-			float range = LiteRules.Range(b.Kind);
-			LiteWeapon? best = null;
-			float bestScore = float.MinValue;
-			foreach (var w in Weapons)
-			{
-				if (!w.Alive || w.Side == b.Side) continue;
-				float d = w.Pos.DistanceTo(b.Pos);
-				if (d > range) continue;
-				float score;
-				if (b.IsGun)
-				{
-					if (w.Arm == LiteArm.Ballistic) continue;
-					score = (w.Arm == LiteArm.Drone ? 100 : 0) - d;
-				}
-				else
-				{
-					if (b.Ammo <= 0) break;
-					if (w.Arm == LiteArm.Drone && !SamsOnDrones[b.Side]) continue;
-					if (w.Engaged >= (w.Arm == LiteArm.Ballistic ? 2 : 1)) continue;
-					score = (int)w.Arm * 1000 - d;
-				}
-				if (score > bestScore) { bestScore = score; best = w; }
-			}
-			if (best == null) continue;
-			if (b.IsGun)
-			{
-				b.Cool = LiteRules.GunInterval * (b.Kind == LiteKind.Capital ? 0.5f : 1f);
-				var aim = best.Pos + new Vector2((float)_rng.NextDouble() * 6 - 3, (float)_rng.NextDouble() * 6 - 3);
-				Fx.Add(new LiteFx { Kind = LiteFxKind.Tracer, A = b.Pos, B = aim, Life = 0.14f, Side = b.Side });
-				b.FireFlash = 1;
-				if (_rng.NextDouble() < LiteRules.GunPk(best.Arm)) Kill(best, b.Side, b);
-			}
-			else
-			{
-				var side = Sides[b.Side];
-				if (side.Money < LiteRules.InterceptorCost) { b.Cool = 0.5f; continue; }
-				side.Money -= LiteRules.InterceptorCost;
-				b.Ammo--;
-				b.Cool = LiteRules.SamInterval;
-				b.FireFlash = 1;
-				best.Engaged++;
-				Interceptors.Add(new LiteInterceptor { Side = b.Side, Target = best, From = b, Pos = b.Pos, Goal = best.Pos });
-				Fx.Add(new LiteFx { Kind = LiteFxKind.Launch, A = b.Pos, Life = 0.5f, Side = b.Side });
-			}
-			Spot(b, 1 - b.Side);
-		}
-	}
-
-	private void MoveInterceptors(float dt)
-	{
-		foreach (var i in Interceptors)
-		{
-			if (!i.Alive) continue;
-			i.Age += dt;
-			if (i.Target.Alive) i.Goal = i.Target.Pos;
-			var to = i.Goal - i.Pos;
-			float step = LiteRules.InterceptorSpeed * dt, d = to.Length();
-			i.Trail.Add(i.Pos);
-			if (i.Trail.Count > 8) i.Trail.RemoveAt(0);
-			if (d > step + 3 && i.Age < 4f) { i.Pos += to / d * step; continue; }
-			i.Pos = i.Goal;
-			i.Alive = false;
-			if (i.Target.Alive && _rng.NextDouble() < LiteRules.SamPk(i.Target.Arm)) Kill(i.Target, i.Side, i.From);
-			else
-			{
-				if (i.Target.Alive) i.Target.Engaged--;
-				Fx.Add(new LiteFx { Kind = LiteFxKind.Puff, A = i.Pos, Life = 0.45f, Size = 4, Side = i.Side });
-			}
-		}
-	}
+	// Air defence engagement is in LiteAirDefence.
 
 	// ---------------------------------------------------------------- intelligence and alerts
 
@@ -840,7 +786,7 @@ public sealed class LiteSim
 		}
 	}
 
-	private void Spot(LiteBuilding b, int viewer)
+	internal void Spot(LiteBuilding b, int viewer)
 	{
 		if (b.Seen[viewer]) return;
 		b.Seen[viewer] = true;

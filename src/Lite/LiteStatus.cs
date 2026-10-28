@@ -51,9 +51,11 @@ public partial class LiteStatus : Control
 			if (b.Alive && b.Side == 0 && b.Kind == LiteKind.Factory && b.Ready && sim.Alert[b.Region]) alertFactories++;
 		if (alertFactories > 0)
 			DrawString(font, new Vector2(0, 24), $"{alertFactories} factor{(alertFactories == 1 ? "y" : "ies")} sheltering", HorizontalAlignment.Right, w, 10, LiteGlyphs.Yellow);
+		else if (me.RepairSpend > 0.05f)
+			DrawString(font, new Vector2(0, 24), $"repairs −${me.RepairSpend:0.0}/s", HorizontalAlignment.Right, w, 10, LiteGlyphs.Muted);
 
-		Bar(62, Main.Map.CapitalName[0], sim.Sides[0], LiteGlyphs.Ours, w);
-		Bar(94, Main.Map.CapitalName[1], sim.Sides[1], LiteGlyphs.Enemy, w);
+		Keys(56, Main.Map.CapitalName[0], sim.Sides[0], LiteGlyphs.Ours, w);
+		Keys(94, Main.Map.CapitalName[1], sim.Sides[1], LiteGlyphs.Enemy, w);
 
 		int f = 0, ad = 0, ef = 0, ead = 0;
 		foreach (var b in sim.Buildings)
@@ -62,21 +64,28 @@ public partial class LiteStatus : Control
 			if (b.Side == 0) { if (b.Kind == LiteKind.Factory) f++; else if (b.IsAd) ad++; }
 			else if (b.Seen[0]) { if (b.Kind == LiteKind.Factory) ef++; else if (b.IsAd) ead++; }
 		}
-		DrawString(font, new Vector2(0, 136), $"Ours  {f} factories · {ad} AD", HorizontalAlignment.Left, -1, 11, LiteGlyphs.Muted);
-		DrawString(font, new Vector2(0, 136), $"Seen  {ef} · {ead}", HorizontalAlignment.Right, w, 11, LiteGlyphs.Muted);
-		DrawString(font, new Vector2(0, 150), $"Shot down {me.Downed} · hits on enemy {me.Hits}", HorizontalAlignment.Left, -1, 11, LiteGlyphs.Faint);
+		DrawString(font, new Vector2(0, 142), $"Ours  {f} factories · {ad} AD", HorizontalAlignment.Left, -1, 11, LiteGlyphs.Muted);
+		DrawString(font, new Vector2(0, 142), $"Seen  {ef} · {ead}", HorizontalAlignment.Right, w, 11, LiteGlyphs.Muted);
 	}
 
-	/// A capital's health, and how fast its factories are repairing it.
-	private void Bar(float y, string name, LiteSide side, Color col, float w)
+	/// A capital's four key targets: a health bar each with its short name,
+	/// and how many are destroyed of the number that ends the war.
+	private void Keys(float y, string name, LiteSide side, Color col, float w)
 	{
-		var cap = side.Capital;
-		float hp = Math.Max(0, cap.Hp);
 		DrawString(LiteGlyphs.Bold, new Vector2(0, y + 10), name, HorizontalAlignment.Left, -1, 12, LiteGlyphs.Text);
-		string repair = side.Repair > 0 ? $"repairing +{side.Repair * 60:0.#}/min   " : "";
-		DrawString(LiteGlyphs.Font, new Vector2(0, y + 10), $"{repair}{hp:0}/{cap.MaxHp:0}", HorizontalAlignment.Right, w, 11, LiteGlyphs.Muted);
-		var r = new Rect2(0, y + 16, w, 5);
-		DrawRect(r, LiteGlyphs.PanelHi);
-		DrawRect(new Rect2(r.Position, new Vector2(w * hp / cap.MaxHp, 5)), col.Lerp(LiteGlyphs.HitGlow, cap.Flash));
+		var lost = $"{side.KeysLost} of {LiteRules.KeysToWin} destroyed";
+		DrawString(LiteGlyphs.Font, new Vector2(0, y + 10), lost, HorizontalAlignment.Right, w, 11, side.KeysLost > 0 ? LiteGlyphs.Yellow : LiteGlyphs.Muted);
+		int n = side.Keys.Count;
+		float gap = 6, bw = (w - gap * (n - 1)) / n;
+		for (int i = 0; i < n; i++)
+		{
+			var k = side.Keys[i];
+			float x = i * (bw + gap), hp = k.Alive ? Math.Max(0, k.Hp) : 0;
+			var r = new Rect2(x, y + 16, bw, 5);
+			DrawRect(r, LiteGlyphs.PanelHi);
+			DrawRect(new Rect2(r.Position, new Vector2(bw * hp / k.MaxHp, 5)), col.Lerp(LiteGlyphs.HitGlow, k.Flash));
+			var label = k.Alive ? LiteGlyphs.Short(k.Kind) : "x " + LiteGlyphs.Short(k.Kind);
+			DrawString(LiteGlyphs.Font, new Vector2(x, y + 32), label, HorizontalAlignment.Left, bw, 10, k.Alive ? LiteGlyphs.Muted : LiteGlyphs.Faint);
+		}
 	}
 }

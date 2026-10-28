@@ -9,6 +9,8 @@ public partial class LiteToolButton : Control
 	public string Title = "", Price = "", Key = "";
 	public bool Selected, Affordable = true;
 	public Color Accent = LiteGlyphs.Ours;
+	/// The card's height; icon, title and price are placed by it.
+	public float Height = 72;
 	public Action? Clicked;
 	private float _hover, _sel, _press;
 	private bool _in;
@@ -18,7 +20,7 @@ public partial class LiteToolButton : Control
 
 	public override void _Ready()
 	{
-		CustomMinimumSize = new Vector2(0, 72);
+		CustomMinimumSize = new Vector2(0, Height);
 		SizeFlagsHorizontal = SizeFlags.ExpandFill;
 		MouseFilter = MouseFilterEnum.Stop;
 		MouseDefaultCursorShape = CursorShape.PointingHand;
@@ -70,9 +72,10 @@ public partial class LiteToolButton : Control
 		float lift = -2f * _hover;
 		var icon = new Color(1, 1, 1, dim).Lerp(Accent.Lightened(0.35f), _sel * 0.6f);
 		float angle = Glyph is LiteGlyph.Drone or LiteGlyph.Cruise ? -MathF.PI / 4 : 0;
-		LiteGlyphs.Draw(this, Glyph, new Vector2(Size.X / 2, 24 + lift), 1.55f, icon, angle);
-		DrawString(LiteGlyphs.Bold, new Vector2(0, 50), Title, HorizontalAlignment.Center, Size.X, 12, new Color(LiteGlyphs.Text, dim));
-		DrawString(LiteGlyphs.Font, new Vector2(0, 64), Price, HorizontalAlignment.Center, Size.X, 11, Affordable ? LiteGlyphs.Muted : LiteGlyphs.Enemy);
+		float h = Size.Y;
+		LiteGlyphs.Draw(this, Glyph, new Vector2(Size.X / 2, h * 0.32f + lift), 1.45f, icon, angle);
+		DrawString(LiteGlyphs.Bold, new Vector2(0, h * 0.68f), Title, HorizontalAlignment.Center, Size.X, 12, new Color(LiteGlyphs.Text, dim));
+		DrawString(LiteGlyphs.Font, new Vector2(0, h * 0.88f), Price, HorizontalAlignment.Center, Size.X, 11, Affordable ? LiteGlyphs.Muted : LiteGlyphs.Enemy);
 		if (Key != "") DrawString(LiteGlyphs.Font, new Vector2(8, 15), Key, HorizontalAlignment.Left, -1, 10, LiteGlyphs.Faint);
 	}
 }

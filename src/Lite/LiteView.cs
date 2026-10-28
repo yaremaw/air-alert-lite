@@ -98,15 +98,20 @@ public partial class LiteView : Node2D
 		var sim = Sim;
 		var b = _b;
 		b.Begin(this);
-		// Air defence cover: ours, and the enemy's that has shown itself.
+		// Air defence radar sectors: ours, and the enemy's that has shown itself.
 		if (LiteSettings.Ranges)
 			foreach (var s in sim.Buildings)
 			{
-				if (!s.Alive || !(s.IsAd || s.IsGun) || !s.Ready || !Shown(s)) continue;
-				var col = LiteGlyphs.SideColor(s.Side);
-				float r = LiteRules.Range(s.Kind);
-				b.Disc(s.Pos, r, new Color(col, 0.035f), false);
-				b.Ring(s.Pos, r, new Color(col, 0.16f + 0.3f * s.FireFlash), 1f);
+				if (!s.Alive || !s.IsAd || !s.Ready || !Shown(s)) continue;
+				Sector(s.Pos, s.Facing, LiteGlyphs.SideColor(s.Side), 1f, s.FireFlash);
+				// Turning: where it will face, dashed.
+				if (MathF.Abs(Mathf.AngleDifference(s.Facing, s.TargetFacing)) > 0.02f)
+				{
+					_pts.Clear();
+					_pts.Add(s.Pos);
+					_pts.Add(s.Pos + Vector2.FromAngle(s.TargetFacing) * LiteRules.AdRange);
+					b.Dashed(_pts, new Color(LiteGlyphs.SideColor(s.Side), 0.5f), 1.2f, 5, 4);
+				}
 			}
 		foreach (var f in sim.Fx)
 			if (f.Kind == LiteFxKind.Scorch)
@@ -126,9 +131,8 @@ public partial class LiteView : Node2D
 		foreach (var i in sim.Interceptors) if (i.Alive) DrawInterceptor(i);
 		foreach (var f in sim.Fx) DrawFx(f);
 		b.Flush();
-		foreach (var s in sim.Buildings)
-			if (s.Alive && s.Kind == LiteKind.Capital)
-				LiteLabels.Draw(this, s.Pos + new Vector2(0, 26), Map.CapitalName[s.Side], 12, LiteGlyphs.Text);
+		for (int side = 0; side < 2; side++)
+			LiteLabels.Draw(this, Sim.Sides[side].Center + new Vector2(0, 4), Map.CapitalName[side], 12, LiteGlyphs.Text);
 		DrawTool();
 	}
 
@@ -136,8 +140,8 @@ public partial class LiteView : Node2D
 	{
 		var b = _b;
 		var col = LiteGlyphs.SideColor(s.Side);
-		bool cap = s.Kind == LiteKind.Capital;
-		float rad = cap ? 11f : 8f;
+		bool cap = s.IsKey;
+		float rad = cap ? 9.5f : 8f;
 		var p = s.Pos;
 		if (!s.Alive)
 		{
@@ -158,9 +162,12 @@ public partial class LiteView : Node2D
 			if (k > 0.01f) b.Ring(p, rad, col, 1.6f, -MathF.PI / 2, -MathF.PI / 2 + MathF.Tau * k);
 		}
 		LiteGlyphs.Draw(b, LiteGlyphs.Of(s.Kind), p, cap ? 1.25f : 0.95f, new Color(1, 1, 1, s.Ready ? 1f : 0.45f));
-		if (s.Kind == LiteKind.Sam && s.Ready && s.Side == 0)
-			for (int i = 0; i < LiteRules.SamRack; i++)
-				b.Disc(p + new Vector2((i - 1.5f) * 4f, -rad - 4f), 1.3f, i < s.Ammo ? LiteGlyphs.Text : new Color(LiteGlyphs.Text, 0.2f));
+		// Air defence: a tick on the rim towards where its radar faces.
+		if (s.IsAd && s.Ready)
+		{
+			var dir = Vector2.FromAngle(s.Facing);
+			b.Line(p + dir * (rad + 1), p + dir * (rad + 6), col, 2f);
+		}
 		if (cap || s.Hp < s.MaxHp)
 		{
 			float w = cap ? 28 : 16, y = p.Y + rad + 4;
@@ -168,6 +175,17 @@ public partial class LiteView : Node2D
 			b.Rect(bar, new Color(0, 0, 0, 0.55f));
 			b.Rect(new Rect2(bar.Position, new Vector2(w * Math.Max(0, s.Hp) / s.MaxHp, 3)), col);
 		}
+	}
+
+	/// An air defence radar sector: a faint cone with its rim and sides.
+	private void Sector(Vector2 at, float facing, Color col, float strength, float flash)
+	{
+		float half = Mathf.DegToRad(LiteRules.AdArc) / 2, r = LiteRules.AdRange;
+		_b.Fan(at, r, new Color(col, 0.05f * strength), facing - half, facing + half);
+		var edge = new Color(col, (0.22f + 0.3f * flash) * strength);
+		_b.Ring(at, r, edge, 1f, facing - half, facing + half);
+		_b.Line(at, at + Vector2.FromAngle(facing - half) * r, new Color(edge, edge.A * 0.6f), 1f);
+		_b.Line(at, at + Vector2.FromAngle(facing + half) * r, new Color(edge, edge.A * 0.6f), 1f);
 	}
 
 	private static readonly Color EnemyWeapon = new("#ff4f3f"), OurWeapon = new("#5cb0ff");
@@ -282,6 +300,14 @@ public partial class LiteView : Node2D
 	private void DrawTool()
 	{
 		var p = Main.Mouse;
+		if (Main.Aiming is LiteBuilding aim && Main.Mouse.DistanceTo(aim.Pos) > 10)
+		{
+			// Turning one of ours: its sector as it would face, towards the mouse.
+			_b.Begin(this);
+			Sector(aim.Pos, (Main.Mouse - aim.Pos).Angle(), LiteGlyphs.Yellow, 2.5f, 0);
+			_b.Flush();
+			return;
+		}
 		if (Main.BuildTool == LiteKind.Factory)
 		{
 			// Factories go into regions: under each of ours, its room as pips,
@@ -309,13 +335,23 @@ public partial class LiteView : Node2D
 		}
 		if (Main.BuildTool is LiteKind k)
 		{
-			bool ok = Sim.CanPlace(0, p) && Sim.Sides[0].Money >= Sim.Cost(0, k);
-			var col = ok ? LiteGlyphs.Ours : LiteGlyphs.Enemy;
-			if (k != LiteKind.Factory)
+			// Under each of our regions, how many air defence sites it holds of the most it can.
+			foreach (var r in Map.Regions)
 			{
-				float r = LiteRules.Range(k);
-				DrawCircle(p, r, new Color(col, 0.08f));
-				DrawArc(p, r, 0, MathF.Tau, 72, new Color(col, 0.55f), 1.2f, true);
+				if (r.Side != 0) continue;
+				int n = Sim.AdIn(r.Id);
+				var at = r.City ? Map.Capital[0] + new Vector2(0, 40) : r.Label + new Vector2(0, 17);
+				DrawString(LiteGlyphs.Bold, at + new Vector2(-30, 0), $"AD {n}/{LiteRules.AdPerRegion}", HorizontalAlignment.Center, 60, 9,
+					n >= LiteRules.AdPerRegion ? LiteGlyphs.Enemy : LiteGlyphs.Good);
+			}
+			bool ok = Sim.CanPlace(0, p) && Sim.AdRoom(p) && Sim.Sides[0].Money >= Sim.Cost(0, k);
+			var col = ok ? LiteGlyphs.Ours : LiteGlyphs.Enemy;
+			if (k == LiteKind.Ad)
+			{
+				// Its sector as it would first face, towards the enemy capital.
+				_b.Begin(this);
+				Sector(p, (Sim.Sides[1].Center - p).Angle(), col, 2.2f, 0);
+				_b.Flush();
 			}
 			DrawCircle(p, 8, new Color(LiteGlyphs.Page, 0.85f), true, -1, true);
 			DrawArc(p, 8, 0, MathF.Tau, 36, col, 1.6f, true);
@@ -344,7 +380,7 @@ public partial class LiteView : Node2D
 			if (Main.StrikeSnap != null) DrawArc(at, 12, 0, MathF.Tau, 32, Colors.White, 1.2f, true);
 			if (ok)
 			{
-				string s = $"{Main.Salvo}× {LiteGlyphs.Plural(a, Main.Salvo)} · ${LiteRules.Cost(a) * Main.Salvo}";
+				string s = $"{LiteGlyphs.Plural(a, 2)} · {Math.Min(Main.Salvo, Sim.Sides[0].Production.Stock[(int)a])} of {Sim.Sides[0].Production.Stock[(int)a]} in stock";
 				var font = LiteGlyphs.Bold;
 				DrawStringOutline(font, at + new Vector2(r + 8, 4), s, HorizontalAlignment.Left, -1, 11, 4, new Color(0, 0, 0, 0.6f));
 				DrawString(font, at + new Vector2(r + 8, 4), s, HorizontalAlignment.Left, -1, 11, LiteGlyphs.Text);

@@ -127,8 +127,9 @@ public partial class LiteHud : Control
 	private void DrawHint()
 	{
 		string hint = "";
-		if (Main.BuildTool == LiteKind.Factory) hint = $"Click a region with a free place (green) to build a factory there (${Main.Sim.Cost(0, LiteKind.Factory)}) · Right-click cancels";
-		else if (Main.BuildTool is LiteKind k) hint = $"Click your territory to build: {LiteGlyphs.Name(k)} (${Main.Sim.Cost(0, k)}) · Shift keeps the tool · Right-click cancels";
+		if (Main.Aiming != null) hint = "Let go where its radar should face · it turns over a few seconds";
+		else if (Main.BuildTool == LiteKind.Factory) hint = $"Click a region with a free place (green) to build a factory there (${Main.Sim.Cost(0, LiteKind.Factory)}) · click again for more · Right-click puts the tool down";
+		else if (Main.BuildTool is LiteKind k) hint = $"Click your territory to build: {LiteGlyphs.Name(k)} (${Main.Sim.Cost(0, k)}) · click again for more · Right-click puts the tool down";
 		else if (Main.StrikeTool is LiteArm a) hint = $"Click enemy territory to launch {LiteGlyphs.Plural(a, 2)} straight, or drag a route from your land to the target · Right-click cancels";
 		float y = Size.Y - 34;
 		if (_msgAge < 2.2f)
@@ -152,17 +153,20 @@ public partial class LiteHud : Control
 
 	private void DrawTooltip()
 	{
-		if ((Main.BuildTool != null && Main.BuildTool != LiteKind.Factory) || Main.StrikeTool != null) return;
+		if (Main.StrikeTool != null) return;
 		var sim = Main.Sim;
 		string head = "", body = "";
 		if (Main.HoverBuilding is LiteBuilding b)
 		{
 			head = (b.Side == 0 ? "" : "Enemy ") + LiteGlyphs.Name(b.Kind);
+			// What each weapon would do to it, after its armor.
+			if (b.Side == 1)
+				head += $"  ·  hit: drone {LiteDamage.Dealt(LiteArm.Drone, b.Kind):0} · cruise {LiteDamage.Dealt(LiteArm.Cruise, b.Kind):0} · ballistic {LiteDamage.Dealt(LiteArm.Ballistic, b.Kind):0}";
 			body = b.Kind switch
 			{
-				LiteKind.Capital => $"Health {Math.Max(0, b.Hp):0}/{b.MaxHp:0} · own AA guns · repaired by its factories",
-				LiteKind.Factory => $"Health {b.Hp:0}/{b.MaxHp:0} · +${LiteRules.FactoryIncome:0}/s, repairs the capital{(sim.Alert[b.Region] ? " (sheltering)" : "")}",
-				LiteKind.Sam => b.Side == 0 ? $"Missiles {b.Ammo}/{LiteRules.SamRack} · health {b.Hp:0}/{b.MaxHp:0}" : $"Health {b.Hp:0}/{b.MaxHp:0}",
+				>= LiteKind.Hq => $"Health {Math.Max(0, b.Hp):0}/{b.MaxHp:0} · armor {b.Armor:0} · key target",
+				LiteKind.Factory => $"Health {b.Hp:0}/{b.MaxHp:0} · armor {b.Armor:0} · +${LiteRules.FactoryIncome:0}/s, +{LiteRules.FactoryPP:0.#} PP/s{(sim.Alert[b.Region] ? " (sheltering)" : "")}",
+				LiteKind.Ad => $"Health {b.Hp:0}/{b.MaxHp:0} · armor {b.Armor:0} · {LiteRules.AdArc:0}° sector · tracks {LiteRules.AdChannels}{(b.Side == 0 ? " · drag to turn" : "")}",
 				_ => $"Health {b.Hp:0}/{b.MaxHp:0}",
 			};
 			if (!b.Ready) body = $"Building… {b.Build:0}s";
@@ -172,7 +176,7 @@ public partial class LiteHud : Control
 			var r = Main.Map.Regions[Main.HoverRegion];
 			head = r.Name + (r.City ? "" : r.Side == 0 ? " region" : "");
 			if (r.Side == 0 && !r.City)
-				head += $" · factories {sim.FactoriesIn(r.Id)}/{sim.Slots[r.Id]}{(sim.RuinsIn(r.Id) > 0 ? $", {sim.RuinsIn(r.Id)} in ruins" : "")}";
+				head += $" · factories {sim.FactoriesIn(r.Id)}/{sim.Slots[r.Id]}{(sim.RuinsIn(r.Id) > 0 ? $", {sim.RuinsIn(r.Id)} in ruins" : "")} · AD {sim.AdIn(r.Id)}/{LiteRules.AdPerRegion}";
 			body = sim.Alert[r.Id]
 				? $"{(sim.Ballistic[r.Id] ? "Ballistic threat" : "Air alert")} · {Duration(sim.Time - sim.AlertSince[r.Id])}"
 				: r.Side == 0 ? "No alert" : "Enemy territory";

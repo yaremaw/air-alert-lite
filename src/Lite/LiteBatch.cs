@@ -168,6 +168,17 @@ public sealed class LiteBatch
 		Rect(new Rect2(c.X - h, c.Y - h, h * 2, h * 2), col);
 	}
 
+	/// A filled slice of a disc, from angle `from` to `to`, hard-edged.
+	public void Fan(Vector2 c, float r, Color col, float from, float to)
+	{
+		int n = Math.Clamp((int)(Segments(r) * Math.Abs(to - from) / MathF.Tau) + 1, 2, 64);
+		Room(n + 2);
+		Unit(n, from, to - from);
+		int center = Vert(c, col), first = _np;
+		for (int s = 0; s <= n; s++) Vert(c + _unit[s] * r, col);
+		for (int s = 0; s < n; s++) Tri(center, first + s, first + s + 1);
+	}
+
 	public void Rect(Rect2 r, Color col)
 	{
 		Room(4);

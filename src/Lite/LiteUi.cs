@@ -1,17 +1,19 @@
 using System;
 using Godot;
 
-/// The interface of the lite game: the side panel (status, BUILD, STRIKE,
-/// the feed, speed and the menu button), the HUD over the map, and the
-/// screens over it: the menu, a new game, settings and the end of a war.
+/// The interface of the lite game: the side panel (status, BUILD,
+/// PRODUCTION with its queue, STRIKE from the stockpile, the feed, speed and
+/// the menu button), the HUD over the map, and the screens over it: the
+/// menu, a new game, settings and the end of a war.
 public partial class LiteUi : CanvasLayer
 {
 	public LiteMain Main = null!;
 	public LiteHud Hud = null!;
-	private readonly LiteToolButton[] _build = new LiteToolButton[3], _strike = new LiteToolButton[3];
-	private readonly LiteChip[] _salvo = new LiteChip[3], _speed = new LiteChip[4], _diff = new LiteChip[3];
+	private readonly LiteToolButton[] _build = new LiteToolButton[2], _strike = new LiteToolButton[3];
+	private readonly LiteChip[] _salvo = new LiteChip[4], _speed = new LiteChip[4], _diff = new LiteChip[3], _make = new LiteChip[3];
+	private LiteChip _repairs = null!, _repeat = null!;
+	private Label _ppHint = null!;
 	private readonly LiteChip[] _volume = new LiteChip[4], _window = new LiteChip[2], _routes = new LiteChip[2], _ranges = new LiteChip[2];
-	private LiteChip _samToggle = null!;
 	private VBoxContainer _feed = null!;
 	private Control _panel = null!, _menu = null!, _newGame = null!, _settings = null!, _end = null!;
 	private Button _continue = null!, _newGameButton = null!;
@@ -20,23 +22,24 @@ public partial class LiteUi : CanvasLayer
 	/// True while one of the screens over the map is open; the war stands still.
 	public bool MenuOpen => _menu.Visible || _newGame.Visible || _settings.Visible;
 
-	public static readonly LiteKind[] BuildKinds = { LiteKind.Factory, LiteKind.Gun, LiteKind.Sam };
+	public static readonly LiteKind[] BuildKinds = { LiteKind.Factory, LiteKind.Ad };
 	public static readonly LiteArm[] Arms = { LiteArm.Drone, LiteArm.Cruise, LiteArm.Ballistic };
-	public static readonly int[] Salvos = { 1, 3, 6 };
+	/// Salvo sizes; the last means everything in stock.
+	public static readonly int[] Salvos = { 1, 3, 6, 999 };
 	private static readonly float[] Speeds = { 0, 1, 2, 3 };
 
 	private static readonly string[] BuildTips =
 	{
-		"Factory: +$4/s and repairs the capital. Built into a region with room for it; the front has more room than the rear. Each one costs $20 more than the last. While its region is under air alert the workers shelter and it runs at half its pace.",
-		"AA gun: cheap and short-ranged. Shoots at drones, now and then hits a cruise missile. Its shells cost nothing.",
-		"SAM: long range. Hits drones, cruise and ballistic missiles. Every interceptor costs $10.",
+		$"Factory: +${LiteRules.FactoryIncome:0}/s and +{LiteRules.FactoryPP:0.#} PP/s for weapons. Built into a region with room for it; the front has more room than the rear. Each one costs {LiteRules.FactoryGrowth:0.#}× the last. While its region is under air alert it runs at half its pace.",
+		$"Air defence system: shoots down drones and missiles in range. Its shots cost nothing. Each costs ${LiteRules.AdStep} more than the last; a region holds {LiteRules.AdPerRegion}.",
 	};
 	private static readonly string[] StrikeTips =
 	{
-		"Attack drone: slow and cheap, wanders on its way. Reveals enemy sites it flies over. 1 damage.",
-		"Cruise missile: fast and accurate, launched from deep inside our country. 2 damage.",
-		"Ballistic missile: very fast, hard to intercept, a little scattered. 3 damage.",
+		"Attack drone: slow and cheap, wanders on its way. Reveals enemy sites it flies over.",
+		"Cruise missile: fast and accurate, launched from deep inside our country.",
+		"Ballistic missile: very fast, hard to intercept, a little scattered.",
 	};
+	private static readonly string[] MakeKeys = { "A", "S", "D" };
 
 	public void Build()
 	{
@@ -56,48 +59,71 @@ public partial class LiteUi : CanvasLayer
 		vb.AddThemeConstantOverride("separation", 8);
 		panel.AddChild(vb);
 
-		vb.AddChild(new LiteStatus { Main = Main, CustomMinimumSize = new Vector2(0, 156) });
+		vb.AddChild(new LiteStatus { Main = Main, CustomMinimumSize = new Vector2(0, 150) });
 
-		vb.AddChild(Section("BUILD", "on your territory"));
+		vb.AddChild(Section("BUILD", "money", out _));
 		var row = Row(vb);
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < 2; i++)
 		{
 			var k = BuildKinds[i];
-			var b = new LiteToolButton { Glyph = LiteGlyphs.Of(k), Title = LiteGlyphs.Name(k), Price = $"${LiteRules.Cost(k)}", Key = $"{i + 1}", TooltipText = BuildTips[i] };
+			var b = new LiteToolButton { Glyph = LiteGlyphs.Of(k), Title = LiteGlyphs.Name(k), Key = $"{i + 1}", TooltipText = BuildTips[i], Height = 58 };
 			b.Clicked = () => Main.SelectBuild(k);
 			_build[i] = b;
 			row.AddChild(b);
 		}
 
-		vb.AddChild(Section("STRIKE", "at enemy territory"));
+		vb.AddChild(Section("PRODUCTION", "", out _ppHint));
+		row = Row(vb);
+		for (int i = 0; i < 3; i++)
+		{
+			var a = Arms[i];
+			var c = new LiteChip { Text = $"+ {LiteGlyphs.Name(a)} {LiteRules.PP(a):0}", FontSize = 11, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+				TooltipText = $"Queue a {LiteGlyphs.Plural(a, 1)}: {LiteRules.PP(a):0} production points ({MakeKeys[i]}; Shift adds 5)" };
+			c.Clicked = () => Main.Enqueue(a, Input.IsKeyPressed(Key.Shift) ? 5 : 1);
+			_make[i] = c;
+			row.AddChild(c);
+		}
+		vb.AddChild(new LiteQueue { Main = Main });
+		row = Row(vb);
+		_repeat = new LiteChip { FontSize = 11, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, TooltipText = "Every finished weapon goes to the back of the queue again, so production never stops." };
+		_repeat.Clicked = () => { var p = Main.Sim.Sides[0].Production; p.Repeat = !p.Repeat; Main.Audio.Click(); };
+		row.AddChild(_repeat);
+		var clear = new LiteChip { Text = "Clear", FontSize = 11, CustomMinimumSize = new Vector2(52, 28), TooltipText = "Empty the queue" };
+		clear.Clicked = () => { Main.Sim.Sides[0].Production.Clear(); Main.Audio.Click(); };
+		row.AddChild(clear);
+		_repairs = new LiteChip { FontSize = 11, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+			TooltipText = $"Damaged buildings are repaired for money: {LiteRules.RepairRate * 100:0.#}% of their health a second, ${LiteRules.RepairPrice:0.##} for each 1%." };
+		_repairs.Clicked = () => { var me = Main.Sim.Sides[0]; me.Repairing = !me.Repairing; Main.Audio.Click(); };
+		row.AddChild(_repairs);
+
+		vb.AddChild(Section("STRIKE", "from the stockpile", out _));
 		row = Row(vb);
 		string[] keys = { "Q", "W", "E" };
 		for (int i = 0; i < 3; i++)
 		{
 			var a = Arms[i];
-			var b = new LiteToolButton { Glyph = LiteGlyphs.Of(a), Title = LiteGlyphs.Name(a), Price = $"${LiteRules.Cost(a)}", Key = keys[i], Accent = LiteGlyphs.Yellow, TooltipText = StrikeTips[i] };
+			var b = new LiteToolButton { Glyph = LiteGlyphs.Of(a), Title = LiteGlyphs.Name(a), Key = keys[i], Accent = LiteGlyphs.Yellow, TooltipText = StrikeTips[i], Height = 58 };
 			b.Clicked = () => Main.SelectStrike(a);
 			_strike[i] = b;
 			row.AddChild(b);
 		}
 		row = Row(vb);
-		var salvoLabel = new Label { Text = "Salvo", VerticalAlignment = VerticalAlignment.Center, CustomMinimumSize = new Vector2(46, 0) };
+		var salvoLabel = new Label { Text = "Salvo", VerticalAlignment = VerticalAlignment.Center, CustomMinimumSize = new Vector2(40, 0) };
 		salvoLabel.AddThemeColorOverride("font_color", LiteGlyphs.Muted);
 		salvoLabel.AddThemeFontSizeOverride("font_size", 12);
 		row.AddChild(salvoLabel);
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < Salvos.Length; i++)
 		{
 			int n = Salvos[i];
-			var c = new LiteChip { Text = $"{n}×", Accent = LiteGlyphs.Yellow, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, TooltipText = $"Launch {n} at each click" };
+			bool all = i == Salvos.Length - 1;
+			var c = new LiteChip { Text = all ? "All" : $"{n}×", Accent = LiteGlyphs.Yellow, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+				TooltipText = all ? "Launch everything of that kind in stock" : $"Launch {n} at each click" };
 			c.Clicked = () => { Main.Salvo = n; Main.Audio.Click(); };
 			_salvo[i] = c;
 			row.AddChild(c);
 		}
-		_samToggle = new LiteChip { Text = "", TooltipText = "SAM interceptors cost $10 each, about what a drone costs. Switch off to leave drones to the guns.", FontSize = 11 };
-		_samToggle.Clicked = () => { Main.Sim.SamsOnDrones[0] = !Main.Sim.SamsOnDrones[0]; Main.Audio.Click(); };
-		vb.AddChild(_samToggle);
 
-		vb.AddChild(Section("FEED", ""));
+		vb.AddChild(Section("FEED", "", out _));
 		// The feed takes what room is left and never pushes the row below off the panel.
 		var scroll = new ScrollContainer
 		{
@@ -139,7 +165,7 @@ public partial class LiteUi : CanvasLayer
 		return row;
 	}
 
-	private static Control Section(string title, string hint)
+	private static Control Section(string title, string hint, out Label hintLabel)
 	{
 		var row = new HBoxContainer { CustomMinimumSize = new Vector2(0, 16) };
 		var t = new Label { Text = title, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
@@ -151,6 +177,7 @@ public partial class LiteUi : CanvasLayer
 		h.AddThemeFontSizeOverride("font_size", 10);
 		h.AddThemeColorOverride("font_color", LiteGlyphs.Faint);
 		row.AddChild(h);
+		hintLabel = h;
 		return row;
 	}
 
@@ -252,8 +279,8 @@ public partial class LiteUi : CanvasLayer
 		Title(box, "New war");
 		box.AddChild(Text(
 			"Hold the sky over your country and strike back.\n\n" +
-			"•  Factories earn the money and repair your capital. Under air alert they slow down.\n" +
-			"•  AA guns and SAMs shoot down drones and missiles flying into range.\n" +
+			"•  Factories earn money and production points. Money builds factories and air defence and pays for repairs; production points build drones and missiles into a stockpile.\n" +
+			"•  Air defence shoots down drones and missiles flying into range.\n" +
 			"•  The enemy's sites are hidden: send drones to find them, missiles to destroy them.\n" +
 			"•  Its capital heals while its factories work: hit them, and the air defence guarding them, first.\n" +
 			"•  Destroy the enemy capital before it destroys yours.",
@@ -384,17 +411,28 @@ public partial class LiteUi : CanvasLayer
 	{
 		if (Main.Sim == null) return;
 		var me = Main.Sim.Sides[0];
-		for (int i = 0; i < 3; i++)
+		var prod = me.Production;
+		for (int i = 0; i < 2; i++)
 		{
 			_build[i].Selected = Main.BuildTool == BuildKinds[i];
 			int price = Main.Sim.Cost(0, BuildKinds[i]);
 			_build[i].Affordable = me.Money >= price;
 			_build[i].Price = $"${price}";
+		}
+		for (int i = 0; i < 3; i++)
+		{
+			int stock = prod.Stock[i];
 			_strike[i].Selected = Main.StrikeTool == Arms[i];
-			_strike[i].Affordable = me.Money >= LiteRules.Cost(Arms[i]);
-			_salvo[i].Selected = Main.Salvo == Salvos[i];
+			_strike[i].Affordable = stock > 0;
+			_strike[i].Price = stock > 0 ? $"{stock} ready" : "none ready";
 			_diff[i].Selected = LiteSettings.Difficulty == i;
 		}
+		for (int i = 0; i < Salvos.Length; i++) _salvo[i].Selected = Main.Salvo == Salvos[i];
+		_ppHint.Text = $"{prod.Rate:0.#} PP/s";
+		_repeat.Text = prod.Repeat ? "Repeat: ON" : "Repeat: OFF";
+		_repeat.Selected = prod.Repeat;
+		_repairs.Text = me.Repairing ? "Repairs: ON" : "Repairs: OFF";
+		_repairs.Selected = me.Repairing;
 		for (int i = 0; i < 4; i++) _volume[i].Selected = LiteSettings.Volume == i;
 		for (int i = 0; i < 2; i++)
 		{
@@ -404,8 +442,5 @@ public partial class LiteUi : CanvasLayer
 		}
 		_panel.Visible = Main.Started;
 		for (int i = 0; i < 4; i++) _speed[i].Selected = i == 0 ? Main.Paused : !Main.Paused && Main.Speed == Speeds[i];
-		bool on = Main.Sim.SamsOnDrones[0];
-		_samToggle.Text = on ? "SAMs fire at drones: ON" : "SAMs fire at drones: OFF (guns only)";
-		_samToggle.Selected = on;
 	}
 }
