@@ -65,12 +65,15 @@ func _draw_alert_card() -> void:
 	var regions: int = sim.alerted[0]
 	var threats: int = 0
 	var ballistic: bool = false
+	var missiles: bool = false
 	for wp: LiteWeapon in sim.weapons:
 		if wp.alive and wp.side == 1 and wp.seen[0]:
 			threats += 1
 			if wp.arm == LiteArm.BALLISTIC:
 				ballistic = true
-	var state: float = 0.0 if regions == 0 else (2.0 if ballistic else 1.0)
+			if wp.arm != LiteArm.DRONE:
+				missiles = true
+	var state: float = 0.0 if regions == 0 else (2.0 if missiles else 1.0)
 	if state != _state:
 		if _state >= 0 and state > 0:
 			_pulse = 1
@@ -78,7 +81,7 @@ func _draw_alert_card() -> void:
 	var tone: Color = LiteGlyphs.BALLISTIC_ALERT if state == 2 else (LiteGlyphs.YELLOW if state == 1 else LiteGlyphs.MUTED)
 	var title: String
 	if state == 2:
-		title = "Ballistic threat!"
+		title = "Ballistic threat!" if ballistic else "Missile threat · %d region%s" % [regions, "" if regions == 1 else "s"]
 	elif state == 1:
 		title = "Air alert · %d region%s" % [regions, "" if regions == 1 else "s"]
 	else:
@@ -180,14 +183,14 @@ func _draw_tooltip() -> void:
 			var ruins: int = sim.ruins_in(r.id)
 			head += " · factories %d/%d%s" % [sim.factories_in(r.id), sim.slots[r.id], (", %d in ruins" % ruins) if ruins > 0 else ""]
 		if sim.alert[r.id]:
-			body = "%s · %s" % ["Ballistic threat" if sim.ballistic[r.id] else "Air alert", duration(sim.time - sim.alert_since[r.id])]
+			body = "%s · %s" % ["Ballistic threat" if sim.ballistic[r.id] else ("Missile threat" if sim.missile[r.id] else "Air alert · drones"), duration(sim.time - sim.alert_since[r.id])]
 		else:
 			body = "No alert" if r.side == 0 else "Enemy territory"
 	if head == "":
 		return
 	var font: Font = LiteGlyphs.font
 	var w: float = maxf(LiteGlyphs.bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x, font.get_string_size(body, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x) + 20
-	var p: Vector2 = main.mouse + Vector2(16, 14)
+	var p: Vector2 = main.to_screen(main.mouse) + Vector2(16, 14)
 	if p.x + w > LiteMap.W:
 		p.x -= w + 28
 	var rect:= Rect2(p, Vector2(w, 42))

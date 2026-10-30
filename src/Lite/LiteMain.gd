@@ -55,6 +55,10 @@ func _ready() -> void:
 			shots = a.substr(12).lstrip("\"").rstrip("\"")
 		if a.begins_with("--lite-maps=") and a.substr(12).is_valid_int():
 			maps = a.substr(12).to_int()
+			LiteMap.use_baked = "--lite-baked" in OS.get_cmdline_user_args()
+		if a.begins_with("--lite-bake=") and a.substr(12).is_valid_int():
+			bake(a.substr(12).to_int())
+			return
 	if sim_seconds > 0:
 		run_balance(seed_, sim_seconds, sim_seeds)
 		return
@@ -74,10 +78,20 @@ func _ready() -> void:
 	if shots != null:
 		run_shots(shots, maps)
 
+## Writes `n` freshly generated maps to res://maps for the game to load.
+func bake(n: int) -> void:
+	DirAccess.make_dir_recursive_absolute(LiteMap.BAKED_DIR)
+	for k: int in n:
+		var t0: int = Time.get_ticks_msec()
+		var m: LiteMap = LiteMap.generate(1000 + k * 7919)
+		var path: String = LiteMap.BAKED_DIR + "map_%03d.bin" % k
+		print("[bake] %s: %d regions, %d ms, %s" % [path, m.regions.size(), Time.get_ticks_msec() - t0, error_string(m.save_baked(path))])
+	get_tree().quit()
+
 func new_world(seed_: int) -> void:
 	seed = seed_
 	var t0: int = Time.get_ticks_msec()
-	map = LiteMap.generate(seed_)
+	map = LiteMap.for_seed(seed_)
 	sim = LiteSim.new(map, seed_)
 	print("[lite] map %d: %d regions in %d ms" % [seed_, map.regions.size(), Time.get_ticks_msec() - t0])
 	if _view != null:
@@ -87,6 +101,22 @@ func new_world(seed_: int) -> void:
 	add_child(_view)
 	move_child(_view, 0)
 	_view.build()
+	fit_view()
+
+
+## The map is static: scaled once so the land fills the map area (the
+## screen left of the panel), centred, never panned or zoomed after.
+func fit_view() -> void:
+	var land: Rect2 = map.land_rect.grow(14)
+	var frame:= Rect2(6, 6, LiteMap.W - 12, LiteMap.H - 12)
+	var k: float = minf(minf(frame.size.x / land.size.x, frame.size.y / land.size.y), 1.6)
+	var off: Vector2 = frame.get_center() - land.get_center() * k
+	get_viewport().canvas_transform = Transform2D(0, Vector2(k, k), 0, off)
+
+
+## A point on the map to a point on the screen (for the HUD).
+func to_screen(p: Vector2) -> Vector2:
+	return get_viewport().canvas_transform * p
 
 func new_game() -> void:
 	if started:
@@ -453,6 +483,10 @@ func run_balance(seed_: int, seconds: int, seeds: int) -> void:
 			step += 1
 		var winner: String = "none" if sim_.winner < 0 else ("west" if sim_.winner == 0 else "east")
 		print("  end t=%ds winner=%s alert %d%% of the time, %d massive strikes planned" % [roundi(sim_.time), winner, 100 * alert_ticks / maxi(1, ticks), waves])
+		var st: LiteStats = sim_.stats
+		print("  stats: enemy launched %s downed %s landed %s · alerts %d median %.0f min longest %.0f · peak %d · hours %d" % [st.launched, st.downed, st.landed, st.alerts, st.median_alert(), st.longest, st.peak, st.hourly.size()])
+		for r: LiteReport in st.reports:
+			print("  report %s-%s: %s launched, %s down, %d hits, lost %s" % [clock_text(r.start, false), clock_text(r.end, false), r.launched, r.downed, r.hits, r.lost])
 	get_tree().quit()
 
 static func _side_line(s: LiteSim, i: int) -> String:

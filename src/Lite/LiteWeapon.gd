@@ -18,6 +18,10 @@ var trail_acc: float = 0.0
 var alive: bool = true
 
 var aim: LiteBuilding = null
+## The attack it belongs to (enemy weapons, for the attack report) and our
+## regions it has crossed (for the statistics).
+var report: LiteReport = null
+var crossed: Dictionary = {}
 
 var seen: Array[bool] = [false, false]
 var path: PackedVector2Array = PackedVector2Array()

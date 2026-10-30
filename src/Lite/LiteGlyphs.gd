@@ -13,11 +13,16 @@ const ENEMY: Color = Color("#ff5a48")
 const YELLOW: Color = Color("#e5ad16")
 const GOOD: Color = Color("#46c47e")
 
+# Both countries are grey, as on a real alert map: ours lighter, the enemy's
+# darker. Colour means danger only: yellow while drones are about, red while
+# missiles (cruise or ballistic) are.
 const OUR_LAND: Color = Color("#3a3d46")
-const ENEMY_LAND: Color = Color("#6a2622")
+const ENEMY_LAND: Color = Color("#24262c")
 const AIR_ALERT: Color = Color("#d4a017")
-const BALLISTIC_ALERT: Color = Color("#e0574a")
-const ENEMY_ALERT: Color = Color("#b13d33")
+const MISSILE_ALERT: Color = Color("#e0574a")
+const BALLISTIC_ALERT: Color = MISSILE_ALERT
+# Alerts over the enemy's land (our strikes) are shown dimmed.
+const ENEMY_DIM: float = 0.5
 const HIT_GLOW: Color = Color("#ff8a3d")
 
 static var font: Font = ThemeDB.fallback_font

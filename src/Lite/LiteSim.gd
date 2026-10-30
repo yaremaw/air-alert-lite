@@ -43,6 +43,8 @@ var winner: int = -1
 
 var alert: Array[bool] = []
 var ballistic: Array[bool] = []
+## Regions under missile threat (cruise or ballistic): shown red.
+var missile: Array[bool] = []
 var alert_since: PackedFloat32Array = PackedFloat32Array()
 var region_flash: PackedFloat32Array = PackedFloat32Array()
 var alerted: Array[int] = [0, 0]
@@ -52,6 +54,9 @@ var _quiet: PackedFloat32Array = PackedFloat32Array()
 var _bal_quiet: PackedFloat32Array = PackedFloat32Array()
 var _threat: Array[bool] = []
 var _bal: Array[bool] = []
+var _mis: Array[bool] = []
+
+var stats: LiteStats = LiteStats.new()
 
 var _rng: RandomNumberGenerator
 var _queue: Array[Pending] = []
@@ -72,12 +77,15 @@ func _init(p_map: LiteMap, seed: int) -> void:
 	var n: int = map.regions.size()
 	alert.resize(n); alert.fill(false)
 	ballistic.resize(n); ballistic.fill(false)
+	missile.resize(n); missile.fill(false)
+	_mis.resize(n); _mis.fill(false)
 	alert_since.resize(n)
 	region_flash.resize(n)
 	_quiet.resize(n); _bal_quiet.resize(n)
 	_threat.resize(n); _threat.fill(false)
 	_bal.resize(n); _bal.fill(false)
 	slots.resize(n)
+	stats.setup(map)
 	for s: int in 2: init_slots(s)
 	even_slots()
 	for s: int in 2: setup(s)
@@ -297,6 +305,9 @@ func step(dt: float) -> void:
 	if _alert_tick <= 0:
 		_alert_tick += 0.25
 		alerts(0.25)
+		var report: LiteReport = stats.tick(self, 0.25)
+		if report != null:
+			events.append(LiteEvent.new(LiteEv.REPORT, 1, 0, Vector2.ZERO, 0, 0, stats.reports.size() - 1))
 
 	var k: int = 0
 	for r: Ruin in _ruins:
@@ -397,6 +408,7 @@ func launch(p: Pending) -> void:
 	weapons.append(w)
 	p.raid.launched += 1
 	sides[p.side].launched += 1
+	stats.on_launch(w, time)
 	fx.append(LiteFx.new(LiteFxKind.LAUNCH, start, Vector2.ZERO, 0, 0.7, 0, p.side))
 	events.append(LiteEvent.new(LiteEv.LAUNCH, p.side, map.region_at(target), start, arm, 0, 0, p.raid))
 
@@ -529,11 +541,14 @@ func impact(w: LiteWeapon) -> void:
 	w.alive = false
 	var arm: int = w.arm
 	var any: bool = false
+	var lost_before: int = w.raid.destroyed.size()
+	var capital_damage: float = 0.0
 	for b: LiteBuilding in buildings:
 		if not b.alive or b.side == w.side: continue
 		var reach: float = LiteRules.blast(arm) + (6 if b.kind == LiteKind.CAPITAL else 0)
 		if b.pos.distance_to(w.pos) > reach: continue
 		any = true
+		if b.kind == LiteKind.CAPITAL: capital_damage += LiteRules.damage(arm)
 		b.hp -= LiteRules.damage(arm)
 		b.flash = 1
 		if b.kind == LiteKind.CAPITAL and b.hp > 0:
@@ -542,6 +557,7 @@ func impact(w: LiteWeapon) -> void:
 	if any:
 		w.raid.hits += 1
 		sides[w.side].hits += 1
+	stats.on_impact(w, any, PackedStringArray(w.raid.destroyed.slice(lost_before)), capital_damage, time)
 	var size: float = 11.0 if arm == LiteArm.DRONE else (15.0 if arm == LiteArm.CRUISE else 21.0)
 	fx.append(LiteFx.new(LiteFxKind.BLAST, w.pos, Vector2.ZERO, 0, 0.9, size, w.side))
 	fx.append(LiteFx.new(LiteFxKind.SCORCH, w.pos, Vector2.ZERO, 0, 40.0, size, w.side))
@@ -570,6 +586,7 @@ func kill(w: LiteWeapon, by: int, shooter: LiteBuilding) -> void:
 	if shooter != null: shooter.kills += 1
 	w.raid.down += 1
 	sides[by].downed += 1
+	stats.on_down(w, time)
 	fx.append(LiteFx.new(LiteFxKind.POP, w.pos, Vector2.ZERO, 0, 0.5, 6 if w.arm == LiteArm.DRONE else 8, by))
 	events.append(LiteEvent.new(LiteEv.SHOT_DOWN, by, map.region_at(w.pos), w.pos, w.arm, 0, 0, w.raid))
 	finish(w.raid)
@@ -672,6 +689,7 @@ func spot(b: LiteBuilding, viewer: int) -> void:
 func alerts(dt: float) -> void:
 	_threat.fill(false)
 	_bal.fill(false)
+	_mis.fill(false)
 	for w: LiteWeapon in weapons:
 		var victim: int = 1 - w.side
 
@@ -685,18 +703,22 @@ func alerts(dt: float) -> void:
 					if map.regions[n].side == victim:
 						_threat[n] = true
 						_bal[n] = true
+						_mis[n] = true
 			continue
 		var r: float = LiteRules.alert_radius(w.arm)
-		for a: int in 8: mark(w.pos + Vector2(r, 0).rotated(a * PI / 4), victim, false)
+		var mis: bool = w.arm == LiteArm.CRUISE
+		mark(w.pos, victim, false, mis)
+		for a: int in 8: mark(w.pos + Vector2(r, 0).rotated(a * PI / 4), victim, false, mis)
 		var ahead: float = w.speed * LiteRules.heading(w.arm)
 		var d: float = 15
 		while d <= ahead:
-			mark(w.pos + w.dir * d, victim, false)
+			mark(w.pos + w.dir * d, victim, false, mis)
 			d += 15
 	for r: LiteRegion in map.regions:
 		if r.city:
 			_threat[r.id] = _threat[r.id] or _threat[r.parent]
 			_bal[r.id] = _bal[r.id] or _bal[r.parent]
+			_mis[r.id] = _mis[r.id] or _mis[r.parent]
 	for i: int in alert.size():
 		var side: int = map.regions[i].side
 		if _bal[i]:
@@ -705,11 +727,15 @@ func alerts(dt: float) -> void:
 		elif ballistic[i]:
 			_bal_quiet[i] += dt
 			if _bal_quiet[i] >= 2.0: ballistic[i] = false
+		# Red follows missiles in the air: it fades back to yellow (or the
+		# all-clear) as soon as no missile threatens the region.
+		missile[i] = _mis[i] or ballistic[i]
 		if _threat[i]:
 			_quiet[i] = 0
 			if not alert[i]:
 				alert[i] = true
 				alert_since[i] = time
+				stats.on_alert(i, side)
 				var was: int = alerted[side]
 				alerted[side] += 1
 				if was == 0:
@@ -718,15 +744,24 @@ func alerts(dt: float) -> void:
 		elif alert[i]:
 			_quiet[i] += dt
 			if _quiet[i] >= LiteRules.ALL_CLEAR_AFTER:
+				stats.on_all_clear(i, side, time - alert_since[i])
 				alert[i] = false
 				ballistic[i] = false
+				missile[i] = false
 				alerted[side] -= 1
 				if alerted[side] == 0:
 					side_quiet_since[side] = time
 					events.append(LiteEvent.new(LiteEv.ALL_CLEAR, side, 0, Vector2.ZERO, 0, 0, time - side_alert_since[side]))
 
-func mark(p: Vector2, victim: int, ballistic: bool) -> void:
+## Whether launches at `victim` are still waiting in the queue.
+func enemy_queued(victim: int) -> bool:
+	for p: Pending in _queue:
+		if p.side != victim: return true
+	return false
+
+func mark(p: Vector2, victim: int, ballistic: bool, mis: bool = false) -> void:
 	var id: int = map.region_at(p)
 	if id == LiteMap.NONE or map.regions[id].side != victim: return
 	_threat[id] = true
 	if ballistic: _bal[id] = true
+	if ballistic or mis: _mis[id] = true

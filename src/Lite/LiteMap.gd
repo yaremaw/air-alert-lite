@@ -19,6 +19,9 @@ var edge: PackedFloat32Array = PackedFloat32Array()
 var regions: Array[LiteRegion] = []
 var capital: PackedVector2Array = PackedVector2Array([Vector2.ZERO, Vector2.ZERO])
 var capital_name: PackedStringArray = PackedStringArray(["", ""])
+## The box round all land, in map units: the view is scaled to fill the
+## screen with it.
+var land_rect: Rect2 = Rect2(0, 0, W, H)
 
 var _fx: float = 0.0
 var _bend: float = 0.0
@@ -81,6 +84,85 @@ static func generate(p_seed: int) -> LiteMap:
 	m._build()
 	return m
 
+# Generating a map takes seconds of per-pixel work, too slow for a browser, so
+# the game ships a pool of maps baked ahead (`--lite-bake=N`) and a war loads
+# one of them; generation remains for baking and as a fallback.
+const BAKED_DIR: String = "res://maps/"
+## Off for map previews and baking, so they show freshly generated maps.
+static var use_baked: bool = true
+static var _baked_count: int = -1
+
+static func baked_count() -> int:
+	if _baked_count < 0:
+		_baked_count = 0
+		while FileAccess.file_exists(BAKED_DIR + "map_%03d.bin" % _baked_count):
+			_baked_count += 1
+	return _baked_count
+
+## The map for a seed: a baked one when there are any, else generated.
+static func for_seed(p_seed: int) -> LiteMap:
+	var n: int = baked_count() if use_baked else 0
+	if n > 0:
+		var m: LiteMap = load_baked(posmod(p_seed, n))
+		if m != null:
+			return m
+	return generate(p_seed)
+
+func save_baked(path: String) -> Error:
+	var regs: Array = []
+	for r: LiteRegion in regions:
+		var nb:= PackedInt32Array()
+		for k: int in r.neighbors:
+			nb.append(k)
+		regs.append({"side": r.side, "area": r.area, "name": r.name, "city": r.city, "parent": r.parent,
+			"label": r.label, "center": r.center, "spots": PackedVector2Array(r.spots), "neighbors": nb})
+	var f: FileAccess = FileAccess.open_compressed(path, FileAccess.WRITE, FileAccess.COMPRESSION_ZSTD)
+	if f == null:
+		return FileAccess.get_open_error()
+	f.store_var({"seed": seed, "ids": ids, "capital": capital, "capital_name": capital_name,
+		"land_rect": land_rect, "regions": regs})
+	f.close()
+	return OK
+
+static func load_baked(index: int) -> LiteMap:
+	var f: FileAccess = FileAccess.open_compressed(BAKED_DIR + "map_%03d.bin" % index, FileAccess.READ, FileAccess.COMPRESSION_ZSTD)
+	if f == null:
+		return null
+	var d: Dictionary = f.get_var()
+	f.close()
+	var m:= LiteMap.new(int(d["seed"]))
+	m.ids = d["ids"]
+	m.capital = d["capital"]
+	m.capital_name = d["capital_name"]
+	m.land_rect = d["land_rect"]
+	var i: int = 0
+	for rd: Dictionary in d["regions"]:
+		var r:= LiteRegion.new()
+		r.id = i
+		r.side = rd["side"]
+		r.area = rd["area"]
+		r.name = rd["name"]
+		r.city = rd["city"]
+		r.parent = rd["parent"]
+		r.label = rd["label"]
+		r.center = rd["center"]
+		for p: Vector2 in rd["spots"]:
+			r.spots.append(p)
+		for k: int in rd["neighbors"]:
+			r.neighbors[k] = true
+		m.regions.append(r)
+		i += 1
+	# One region per map unit, sampled from the finer id texture as _build does.
+	var cl:= PackedByteArray()
+	cl.resize(W * H)
+	for y: int in H:
+		var ro: int = (y * S + 1) * RW + 1
+		var co: int = y * W
+		for x: int in W:
+			cl[co + x] = m.ids[ro + x * S]
+	m.cell = cl
+	return m
+
 func _init(p_seed: int = 0) -> void:
 	seed = p_seed
 
@@ -104,10 +186,10 @@ func _build() -> void:
 	_ns = rng.randi_range(1, (1 << 20) - 1)
 
 	_fx = _r(rng, 470, 570)
-	_bend = _r(rng, -70, 90)
-	_sal_y = _r(rng, 180, 560)
-	_sal_a = _r(rng, -75, 75)
-	_sal_w = _r(rng, 50, 110)
+	_bend = _r(rng, -120, 130)
+	_sal_y = _r(rng, 160, 580)
+	_sal_a = _r(rng, -125, 125)
+	_sal_w = _r(rng, 55, 130)
 	var cy: float = 362 + _r(rng, -14, 14)
 	var c0x: float = _fx * 0.5 + _r(rng, 0, 30)
 	_c0 = Vector2(c0x, cy + _r(rng, -8, 16))
@@ -119,7 +201,7 @@ func _build() -> void:
 	_poly0 = _polygon(rng, _c0, west0, east0, north0, south0, n0v)
 	_c1 = Vector2(_fx + (W - _fx) * 0.42, cy + _r(rng, -22, 8))
 	var west1: float = _c1.x - _fx + _r(rng, 150, 210)
-	var east1: float = W - 16 - _c1.x
+	var east1: float = W - 34 - _c1.x - _r(rng, 0, 30)
 	var north1: float = _c1.y - _r(rng, 22, 70)
 	var south1: float = H - _c1.y - _r(rng, 22, 80)
 	var n1v: int = 14 + rng.randi_range(0, 5)
@@ -210,9 +292,12 @@ func _build() -> void:
 				continue
 			var p:= Vector2(x, y)
 			var ok: bool = true
+			# Regions differ in size, as real provinces do: big ones in some
+			# parts of the country, small ones in others.
+			var near: float = dmin * clampf(1.0 + 0.9 * _fbm(x * 0.0055, y * 0.0055, _ns + 41), 0.68, 1.4)
 			for list: Array in seeds:
 				for q: Vector2 in list:
-					if q.distance_to(p) < dmin:
+					if q.distance_to(p) < near:
 						ok = false
 						break
 			if ok:
@@ -237,6 +322,14 @@ func _build() -> void:
 			cell_l[co + x] = ids[ro + x * S]
 	cell = cell_l
 	_compute_edge()
+	var lo:= Vector2(W, H)
+	var hi:= Vector2.ZERO
+	for y: int in range(0, H, 2):
+		for x: int in range(0, W, 2):
+			if cell_l[y * W + x] != NONE:
+				lo = lo.min(Vector2(x, y))
+				hi = hi.max(Vector2(x + 2, y + 2))
+	land_rect = Rect2(lo, hi - lo)
 
 	var ours: Array[String] = _shuffled(OUR_NAMES, rng)
 	var theirs: Array[String] = _shuffled(ENEMY_NAMES, rng)
@@ -633,7 +726,7 @@ func _side_of(wx: float, wy: float) -> int:
 
 func _frontier(y: float) -> float:
 	var d: float = (y - _sal_y) / _sal_w
-	return _fx - _bend * (_smooth((y - 160.0) / 420.0) - 0.5) + 46.0 * _frontier_fbm(y) - _sal_a * exp(-d * d)
+	return _fx - _bend * (_smooth((y - 160.0) / 420.0) - 0.5) + 78.0 * _frontier_fbm(y) - _sal_a * exp(-d * d)
 
 func _frontier_fbm(y: float) -> float:
 	var sum: float = 0.0
@@ -641,7 +734,7 @@ func _frontier_fbm(y: float) -> float:
 	var norm: float = 0.0
 	var f: float = 1.0
 	for o: int in 3:
-		var u: float = (y * 0.009) * f
+		var u: float = (y * 0.012) * f
 		var yi: int = floori(u)
 		var j: int = yi - _FR_LO
 		var v: float
@@ -903,21 +996,53 @@ func _fill_cell(gc: int) -> void:
 		n += 1
 	_g_count[gc] = n
 
+## A country's outline: a squarish base bent by a few long waves, with one
+## or two peninsulas or bulges and a gulf or two cut in, so every map has its
+## own silhouette. The noise warp later makes the edge ragged.
 static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: float, north: float, south: float, n: int) -> PackedVector2Array:
+	var waves: Array[Vector3] = []
+	for h: int in [2, 3, 5]:
+		waves.append(Vector3(h, _r(rng, 0, TAU), _r(rng, 0.05, 0.11) * 3.0 / h))
+	# x: direction, y: width (radians), z: how far out (+) or in (-)
+	var lobes: Array[Vector3] = []
+	for i: int in rng.randi_range(2, 3):
+		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.14, 0.34), _r(rng, 0.18, 0.38)))
+	for i: int in rng.randi_range(1, 2):
+		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.1, 0.2), -_r(rng, 0.14, 0.26)))
+	var m: int = n * 4
 	var poly:= PackedVector2Array()
-	for i: int in n:
-		var a: float = (i + _r(rng, -0.35, 0.35)) / n * TAU
+	for i: int in m:
+		var a: float = (i + _r(rng, -0.3, 0.3)) / m * TAU
 		var cs: float = cos(a)
 		var sn: float = sin(a)
 		var rx: float = east if cs > 0 else west
 		var ry: float = south if sn > 0 else north
-		var k: float = 1.0 / pow(pow(absf(cs) / rx, 3) + pow(absf(sn) / ry, 3), 1.0 / 3.0)
-		if rng.randf() < 0.18:
-			k *= _r(rng, 0.66, 0.8)
-		else:
-			k *= _r(rng, 0.86, 1.06)
-		var p: Vector2 = c + Vector2(cs, sn) * k
-		poly.append(Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14)))
+		var k: float = 1.0 / pow(pow(absf(cs) / rx, 2.6) + pow(absf(sn) / ry, 2.6), 1.0 / 2.6)
+		var f: float = 1.0
+		for wv: Vector3 in waves:
+			f += wv.z * sin(wv.x * a + wv.y)
+		for l: Vector3 in lobes:
+			var d: float = angle_difference(a, l.x) / l.y
+			f += l.z * exp(-d * d)
+		k *= f * _r(rng, 0.975, 1.025)
+		poly.append(c + Vector2(cs, sn) * k)
+	# Where a bulge runs past the frame, pull that side in rather than cut it
+	# flat, so no coast runs straight along the edge of the map.
+	var lo:= Vector2(INF, INF)
+	var hi:= Vector2(-INF, -INF)
+	for p: Vector2 in poly:
+		lo = lo.min(p)
+		hi = hi.max(p)
+	var left: float = minf(1.0, (c.x - 14) / maxf(1.0, c.x - lo.x))
+	var right: float = minf(1.0, (W - 14 - c.x) / maxf(1.0, hi.x - c.x))
+	var up: float = minf(1.0, (c.y - 14) / maxf(1.0, c.y - lo.y))
+	var down: float = minf(1.0, (H - 14 - c.y) / maxf(1.0, hi.y - c.y))
+	for i: int in poly.size():
+		var d: Vector2 = poly[i] - c
+		d.x *= left if d.x < 0 else right
+		d.y *= up if d.y < 0 else down
+		var p: Vector2 = c + d
+		poly[i] = Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14))
 	return poly
 
 static func _inside(poly: PackedVector2Array, p: Vector2) -> bool:
