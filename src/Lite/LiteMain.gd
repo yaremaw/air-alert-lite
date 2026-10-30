@@ -138,6 +138,8 @@ func new_game() -> void:
 	if _autoplay:
 		sim.ai[0] = LiteAi.new(0, seed + 2, 30.0)
 	ui.close_menu()
+	ui.stats_view.visible = false
+	ui.report_card.visible = false
 	ui.clear_feed()
 	ui.post("War. The enemy capital is %s; its factories repair it. Its other sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
 	audio.click()
@@ -255,6 +257,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			KEY_Q: select_strike(LiteArm.DRONE)
 			KEY_W: select_strike(LiteArm.CRUISE)
 			KEY_E: select_strike(LiteArm.BALLISTIC)
+			KEY_T: ui.show_stats()
 			_: return
 		get_viewport().set_input_as_handled()
 	elif mb != null and mb.pressed:
@@ -419,6 +422,10 @@ func handle_events() -> void:
 					continue
 				ui.post("Intelligence: the enemy is massing drones and missiles for a large strike. Ready the air defence.", LiteGlyphs.BALLISTIC_ALERT)
 				audio.siren("alert.wav", -6.0)
+			LiteEv.REPORT:
+				var rep: LiteReport = sim.stats.reports[int(e.value)]
+				ui.report_card.show_report(rep)
+				ui.post("Attack report: %d drones and missiles, %d shot down. Press T for all reports." % [rep.total, rep.total_downed], LiteGlyphs.OURS)
 			LiteEv.SPOTTED:
 				if e.side == 1 and e.kind == LiteKind.FACTORY:
 					ui.post("The enemy has located our factory in %s." % region_name(e.region), LiteGlyphs.ENEMY)
@@ -570,6 +577,19 @@ func run_shots(dir: String, maps: int) -> void:
 	await _shot(dir, "4_pause_menu.png")
 	ui.close_menu()
 	_fake_mouse = null
+	# Statistics and an attack report, once the war has had one.
+	Engine.time_scale = 4
+	await _until(func() -> bool: return sim.winner >= 0 or sim.time > 900 or (sim.stats.reports.size() >= 2 and ui.report_card.visible))
+	Engine.time_scale = 1
+	await _wait(0.5)
+	await _shot(dir, "6_report.png")
+	ui.show_stats(0)
+	await _wait(0.4)
+	await _shot(dir, "7_stats.png")
+	ui.show_stats(1)
+	await _wait(0.4)
+	await _shot(dir, "8_reports.png")
+	ui.stats_view.visible = false
 	await stress(dir)
 	get_tree().quit()
 

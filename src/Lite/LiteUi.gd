@@ -3,6 +3,8 @@ extends CanvasLayer
 
 var main: LiteMain = null
 var hud: LiteHud = null
+var stats_view: LiteStatsView = null
+var report_card: LiteReportCard = null
 var _build: Array[LiteToolButton] = [null, null, null]
 var _strike: Array[LiteToolButton] = [null, null, null]
 var _salvo: Array[LiteChip] = [null, null, null]
@@ -26,7 +28,7 @@ var _end_title: Label = null
 var _end_text: Label = null
 
 var menu_open: bool:
-	get: return _menu.visible or _new_game.visible or _settings.visible
+	get: return _menu.visible or _new_game.visible or _settings.visible or stats_view.visible
 
 const BUILD_KINDS: Array[int] = [LiteKind.FACTORY, LiteKind.GUN, LiteKind.SAM]
 const ARMS: Array[int] = [LiteArm.DRONE, LiteArm.CRUISE, LiteArm.BALLISTIC]
@@ -53,6 +55,10 @@ func build() -> void:
 	hud = LiteHud.new()
 	hud.main = main
 	root.add_child(hud)
+	report_card = LiteReportCard.new()
+	report_card.main = main
+	report_card.mouse_entered.connect(func() -> void: report_card.queue_redraw())
+	root.add_child(report_card)
 
 	var panel:= PanelContainer.new()
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -150,6 +156,14 @@ func build() -> void:
 		show_menu()
 		main.audio.click()
 	row.add_child(menu)
+	var stats:= LiteChip.new()
+	stats.text = "Stats"
+	stats.tooltip_text = "War statistics and attack reports (T)"
+	stats.custom_minimum_size = Vector2(52, 28)
+	stats.clicked = func() -> void:
+		show_stats()
+		main.audio.click()
+	row.add_child(stats)
 	var speed_text: Array[String] = ["II", "1×", "2×", "3×"]
 	for i in 4:
 		var s: float = SPEEDS[i]
@@ -167,6 +181,9 @@ func build() -> void:
 	_new_game = _build_new_game(root)
 	_settings = _build_settings(root)
 	_end = _build_end(root)
+	stats_view = LiteStatsView.new()
+	stats_view.main = main
+	root.add_child(stats_view)
 
 static func _row(parent: Control) -> HBoxContainer:
 	var row:= HBoxContainer.new()
@@ -321,7 +338,7 @@ func _build_new_game(root: Control) -> Control:
 		_show_screen(null)
 		main.new_game())
 	_wide(box, "Back", false, func() -> void: _show_screen(_menu))
-	box.add_child(_text("1 2 3 build  ·  Q W E strike  ·  Space pause  ·  Esc cancel or menu", 11, LiteGlyphs.FAINT))
+	box.add_child(_text("1 2 3 build  ·  Q W E strike  ·  T statistics  ·  Space pause  ·  Esc cancel or menu", 11, LiteGlyphs.FAINT))
 	return o
 
 func _build_settings(root: Control) -> Control:
@@ -372,6 +389,7 @@ func _build_end(root: Control) -> Control:
 	_wide(box, "New war", true, func() -> void:
 		_end.visible = false
 		_show_screen(_new_game))
+	_wide(box, "Statistics", false, func() -> void: show_stats())
 	_wide(box, "Main menu", false, func() -> void:
 		_end.visible = false
 		show_menu())
@@ -396,8 +414,14 @@ func show_settings() -> void:
 func close_menu() -> void:
 	_show_screen(null)
 
+func show_stats(tab: int = 0) -> void:
+	if main.started:
+		stats_view.open(tab)
+
 func back() -> void:
-	if _new_game.visible or _settings.visible:
+	if stats_view.visible:
+		stats_view.visible = false
+	elif _new_game.visible or _settings.visible:
 		_show_screen(_menu)
 	elif _menu.visible and main.started and main.sim.winner < 0:
 		close_menu()
