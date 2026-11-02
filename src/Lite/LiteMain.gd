@@ -200,10 +200,31 @@ func _process(delta: float) -> void:
 			dt -= h
 		LitePerf.sim_ms += LitePerf.now - t0
 	handle_events()
+	engine_sounds(delta)
 	if _end_timer > 0:
 		_end_timer -= delta
 		if _end_timer <= 0:
 			show_end()
+
+## The buzz of enemy drones and the whine of cruise missiles over our land,
+## louder the more of them there are; silent while the war waits.
+func engine_sounds(delta: float) -> void:
+	if audio == null:
+		return
+	var drones: int = 0
+	var cruise: int = 0
+	if started and not paused and not ui.menu_open and sim.winner < 0:
+		for w: LiteWeapon in sim.weapons:
+			if not w.alive or w.side != 1 or not w.seen[0] or w.arm == LiteArm.BALLISTIC:
+				continue
+			if map.side_at(w.pos) != 0:
+				continue
+			if w.arm == LiteArm.DRONE:
+				drones += 1
+			else:
+				cruise += 1
+	audio.loop("drone_loop.wav", (0.3 + 0.7 * minf(1.0, drones / 10.0)) if drones > 0 else 0.0, -11.0, delta)
+	audio.loop("cruise_loop.wav", (0.4 + 0.6 * minf(1.0, cruise / 5.0)) if cruise > 0 else 0.0, -13.0, delta)
 
 func update_hover() -> void:
 	hover_building = null
@@ -381,7 +402,7 @@ func handle_events() -> void:
 				if e.side == 0:
 					ui.post("All clear. The alert lasted %s." % LiteHud.duration(e.value), LiteGlyphs.GOOD)
 					if not _our_alert():
-						audio.siren("all_clear.res", -12.0)
+						audio.siren("all_clear.wav", -10.0)
 			LiteEv.LAUNCH:
 				if e.side == 0:
 					audio.play("launch.wav", -15.0, 0.15)

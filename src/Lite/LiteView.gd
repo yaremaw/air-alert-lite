@@ -96,6 +96,11 @@ func _particles(dt: float) -> void:
 			LiteFxKind.LAUNCH:
 				if f.life > 0.6:
 					_parts.launch(f.a)
+				else:
+					# A SAM firing: ours loud, the enemy's far off.
+					main.audio.play("sam_launch.wav", -9.0 if f.side == 0 else -19.0, 0.15)
+			LiteFxKind.TRACER:
+				main.audio.play("gun.wav", -14.0 if f.side == 0 else -23.0, 0.2)
 			LiteFxKind.PUFF:
 				_parts.puff(f.a, f.size)
 	_known = known

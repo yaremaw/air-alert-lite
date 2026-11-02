@@ -11,6 +11,9 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _next: int = 0
 
 var _siren: AudioStreamPlayer
+## Engine sounds that loop while their source is about: player and level.
+var _loops: Dictionary = {}
+var _loop_level: Dictionary = {}
 
 func _init() -> void:
 	_rng.randomize()
@@ -52,6 +55,34 @@ func play(file: String, db: float = 0.0, gap: float = 0.06, pitch_jitter: float 
 	p.volume_db = db
 	p.pitch_scale = 1.0 + (_rng.randf() * 2 - 1) * pitch_jitter
 	p.play()
+
+## A looping sound whose loudness follows `level` (0 silent, 1 full) with a
+## gentle fade; at full it plays at `max_db`.
+func loop(file: String, level: float, max_db: float, delta: float) -> void:
+	var p: AudioStreamPlayer = _loops.get(file) as AudioStreamPlayer
+	if p == null:
+		var src: AudioStreamWAV = _stream(file) as AudioStreamWAV
+		if src == null:
+			return
+		var s: AudioStreamWAV = src.duplicate() as AudioStreamWAV
+		s.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		s.loop_begin = 0
+		s.loop_end = int(s.get_length() * s.mix_rate)
+		p = AudioStreamPlayer.new()
+		p.stream = s
+		p.bus = "Master"
+		p.volume_db = -60.0
+		add_child(p)
+		_loops[file] = p
+	var cur: float = move_toward(float(_loop_level.get(file, 0.0)), level, delta * 1.2)
+	_loop_level[file] = cur
+	if cur <= 0.01:
+		if p.playing:
+			p.stop()
+		return
+	if not p.playing:
+		p.play(_rng.randf() * 3.0)
+	p.volume_db = max_db + linear_to_db(cur)
 
 func click() -> void:
 	play("click.wav", -8.0, 0.03, 0.03)
