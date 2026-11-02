@@ -4,7 +4,6 @@ extends CanvasLayer
 var main: LiteMain = null
 var hud: LiteHud = null
 var stats_view: LiteStatsView = null
-var report_card: LiteReportCard = null
 var _build: Array[LiteToolButton] = [null, null, null]
 var _strike: Array[LiteToolButton] = [null, null, null]
 var _salvo: Array[LiteChip] = [null, null, null]
@@ -55,10 +54,6 @@ func build() -> void:
 	hud = LiteHud.new()
 	hud.main = main
 	root.add_child(hud)
-	report_card = LiteReportCard.new()
-	report_card.main = main
-	report_card.mouse_entered.connect(func() -> void: report_card.queue_redraw())
-	root.add_child(report_card)
 
 	var panel:= PanelContainer.new()
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP

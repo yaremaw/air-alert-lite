@@ -1,8 +1,8 @@
 class_name LiteReportCard
 extends Control
 ## After a large enemy attack: a card with when it came, how many drones and
-## missiles, how many were shot down by type, and what was lost. It shows
-## for a while at the top left of the map; a click dismisses it.
+## missiles, how many were shot down by type, and what was lost. Drawn only
+## in the statistics screen (T); it no longer pops up over the map.
 
 const BG: Color = Color("#1b2a3d")
 const EDGE: Color = Color("#2e4361")
