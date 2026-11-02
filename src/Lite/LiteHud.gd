@@ -133,10 +133,10 @@ func _draw_badge() -> void:
 func _draw_hint() -> void:
 	var hint: String = ""
 	if _has_tool(main.build_tool) and int(main.build_tool) == LiteKind.FACTORY:
-		hint = "Click a region with a free place (green) to build a factory there ($%d) · Right-click cancels" % main.sim.cost(0, LiteKind.FACTORY)
+		hint = "Click a region with a free place (green) to build a factory there ($%d) · click again for more · Right-click puts the tool down" % main.sim.cost(0, LiteKind.FACTORY)
 	elif _has_tool(main.build_tool):
 		var k: int = int(main.build_tool)
-		hint = "Click your territory to build: %s ($%d) · Shift keeps the tool · Right-click cancels" % [LiteGlyphs.name(k), main.sim.cost(0, k)]
+		hint = "Click your territory to build: %s ($%d) · click again for more · Right-click puts the tool down" % [LiteGlyphs.name(k), main.sim.cost(0, k)]
 	elif _has_tool(main.strike_tool):
 		var a: int = int(main.strike_tool)
 		hint = "Click enemy territory to launch %s straight, or drag a route from your land to the target · Right-click cancels" % LiteGlyphs.plural(a, 2)

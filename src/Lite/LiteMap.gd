@@ -28,6 +28,9 @@ var _bend: float = 0.0
 var _sal_y: float = 0.0
 var _sal_a: float = 0.0
 var _sal_w: float = 0.0
+## Where our peninsula leaves the coast: south of it the frontier keeps east
+## of it, so our south stays a sea coast.
+var _neck: Vector2 = Vector2(-9999, -9999)
 var _c0: Vector2 = Vector2.ZERO
 var _c1: Vector2 = Vector2.ZERO
 var _ns: int = 0
@@ -192,13 +195,19 @@ func _build() -> void:
 	_sal_w = _r(rng, 55, 130)
 	var cy: float = 362 + _r(rng, -14, 14)
 	var c0x: float = _fx * 0.5 + _r(rng, 0, 30)
-	_c0 = Vector2(c0x, cy + _r(rng, -8, 16))
-	var west0: float = _c0.x - _r(rng, 18, 40)
+	_c0 = Vector2(c0x, cy + _r(rng, -20, 10))
+	# Ours is wider than it is tall, as most real countries are, with a sea
+	# coast along the south and a peninsula reaching into it.
+	var west0: float = _c0.x - _r(rng, 14, 30)
 	var east0: float = _fx - _c0.x + _r(rng, 140, 190)
-	var north0: float = _r(rng, 215, 262)
-	var south0: float = _r(rng, 212, 268)
+	var north0: float = _r(rng, 165, 215)
+	var south0: float = _r(rng, 165, 205)
 	var n0v: int = 15 + rng.randi_range(0, 5)
+	var pen_a: float = PI / 2 + _r(rng, -0.45, 0.3)
 	_poly0 = _polygon(rng, _c0, west0, east0, north0, south0, n0v)
+	var pen: Array = _peninsula(rng, _poly0, _c0, pen_a)
+	_poly0 = pen[0]
+	_neck = pen[1]
 	_c1 = Vector2(_fx + (W - _fx) * 0.42, cy + _r(rng, -22, 8))
 	var west1: float = _c1.x - _fx + _r(rng, 150, 210)
 	var east1: float = W - 34 - _c1.x - _r(rng, 0, 30)
@@ -207,11 +216,14 @@ func _build() -> void:
 	var n1v: int = 14 + rng.randi_range(0, 5)
 	_poly1 = _polygon(rng, _c1, west1, east1, north1, south1, n1v)
 
-	if rng.randf() < 0.6:
-		var sea_c:= Vector2(_c0.x + _r(rng, -60, 140), H + _r(rng, 30, 70))
-		var sea_r:= Vector2(_r(rng, 150, 230), _r(rng, 110, 150))
-		_bays_c.append(sea_c)
-		_bays_r.append(sea_r)
+	# The sea on either side of the peninsula's neck: a wide gulf to the
+	# west and a smaller one to the east.
+	var w_r:= Vector2(_r(rng, 70, 105), _r(rng, 30, 46))
+	_bays_c.append(_neck + Vector2(-(16 + w_r.x), _r(rng, -6, 10)))
+	_bays_r.append(w_r)
+	var e_r:= Vector2(_r(rng, 42, 64), _r(rng, 24, 36))
+	_bays_c.append(_neck + Vector2(14 + e_r.x, _r(rng, -12, 4)))
+	_bays_r.append(e_r)
 	var nb: int = rng.randi_range(0, 2)
 	for i: int in nb:
 		var own: PackedVector2Array = _poly0 if i % 2 == 0 else _poly1
@@ -726,7 +738,10 @@ func _side_of(wx: float, wy: float) -> int:
 
 func _frontier(y: float) -> float:
 	var d: float = (y - _sal_y) / _sal_w
-	return _fx - _bend * (_smooth((y - 160.0) / 420.0) - 0.5) + 78.0 * _frontier_fbm(y) - _sal_a * exp(-d * d)
+	var x: float = _fx - _bend * (_smooth((y - 160.0) / 420.0) - 0.5) + 78.0 * _frontier_fbm(y) - _sal_a * exp(-d * d)
+	# Along our south coast the frontier keeps east of the peninsula.
+	var keep: float = _smooth((y - (_neck.y - 140.0)) / 90.0)
+	return maxf(x, lerpf(-9999.0, _neck.x + 150.0, keep)) if keep > 0.0 else x
 
 func _frontier_fbm(y: float) -> float:
 	var sum: float = 0.0
@@ -999,7 +1014,7 @@ func _fill_cell(gc: int) -> void:
 ## A country's outline: a squarish base bent by a few long waves, with one
 ## or two peninsulas or bulges and a gulf or two cut in, so every map has its
 ## own silhouette. The noise warp later makes the edge ragged.
-static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: float, north: float, south: float, n: int) -> PackedVector2Array:
+static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: float, north: float, south: float, n: int, extra: Array[Vector3] = []) -> PackedVector2Array:
 	var waves: Array[Vector3] = []
 	for h: int in [2, 3, 5]:
 		waves.append(Vector3(h, _r(rng, 0, TAU), _r(rng, 0.05, 0.11) * 3.0 / h))
@@ -1009,6 +1024,7 @@ static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: 
 		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.14, 0.34), _r(rng, 0.18, 0.38)))
 	for i: int in rng.randi_range(1, 2):
 		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.1, 0.2), -_r(rng, 0.14, 0.26)))
+	lobes.append_array(extra)
 	var m: int = n * 4
 	var poly:= PackedVector2Array()
 	for i: int in m:
@@ -1044,6 +1060,50 @@ static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: 
 		var p: Vector2 = c + d
 		poly[i] = Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14))
 	return poly
+
+## A peninsula spliced into the coast at direction `a` from `c`: a narrow
+## neck and a rounded head, the way real ones hang off a coastline. Returns
+## the new outline and the point where the neck leaves the coast.
+static func _peninsula(rng: RandomNumberGenerator, poly: PackedVector2Array, c: Vector2, a: float) -> Array:
+	var best: int = 0
+	var bd: float = INF
+	for i: int in poly.size():
+		var d: float = absf(angle_difference((poly[i] - c).angle(), a))
+		if d < bd:
+			bd = d
+			best = i
+	var b: Vector2 = poly[best]
+	var out:= Vector2(cos(a), sin(a))
+	var side:= Vector2(-out.y, out.x)
+	var w: float = _r(rng, 9, 15)
+	var neck: float = _r(rng, 14, 30)
+	var rx: float = _r(rng, 34, 52)
+	var ry: float = rx * _r(rng, 1.15, 1.5)
+	# Keep the head on the map.
+	var room: float = (H - 18 - b.y) / maxf(0.2, out.y) if out.y > 0 else 200.0
+	var shrink: float = clampf((room - neck) / (2 * rx), 0.4, 1.0)
+	rx *= shrink
+	ry *= shrink
+	var dlt: float = asin(clampf(w / ry, 0, 0.9))
+	var h: Vector2 = b + out * (neck + rx * cos(dlt))
+	var pen:= PackedVector2Array()
+	pen.append(b - side * w)
+	pen.append(b - side * w + out * neck)
+	var n: int = 16
+	for k: int in range(1, n):
+		var beta: float = PI + dlt + (TAU - 2 * dlt) * k / n
+		var wob: float = 1.0 + _r(rng, -0.06, 0.06)
+		pen.append(h + out * rx * cos(beta) * wob + side * ry * sin(beta) * wob)
+	pen.append(b + side * w + out * neck)
+	pen.append(b + side * w)
+	var res:= PackedVector2Array()
+	for i: int in poly.size():
+		if i == best:
+			for p: Vector2 in pen:
+				res.append(Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14)))
+		else:
+			res.append(poly[i])
+	return [res, b + out * neck]
 
 static func _inside(poly: PackedVector2Array, p: Vector2) -> bool:
 	var inside: bool = false

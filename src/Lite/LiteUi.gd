@@ -338,7 +338,7 @@ func _build_new_game(root: Control) -> Control:
 		_show_screen(null)
 		main.new_game())
 	_wide(box, "Back", false, func() -> void: _show_screen(_menu))
-	box.add_child(_text("1 2 3 build  ·  Q W E strike  ·  T statistics  ·  Space pause  ·  Esc cancel or menu", 11, LiteGlyphs.FAINT))
+	box.add_child(_text("1 2 3 build  ·  Q W E strike  ·  T statistics  ·  Space pause  ·  F11 fullscreen  ·  Esc cancel or menu", 11, LiteGlyphs.FAINT))
 	return o
 
 func _build_settings(root: Control) -> Control:
@@ -476,6 +476,9 @@ func _process(_delta: float) -> void:
 		_diff[i].selected = LiteSettings.difficulty == i
 	for i in 4:
 		_volume[i].selected = LiteSettings.volume == i
+	# The browser can leave fullscreen on its own (its Esc): follow it.
+	var mode: int = DisplayServer.window_get_mode()
+	LiteSettings.fullscreen = mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
 	for i in 2:
 		_window[i].selected = LiteSettings.fullscreen == (i == 1)
 		_routes[i].selected = LiteSettings.routes == (i == 0)

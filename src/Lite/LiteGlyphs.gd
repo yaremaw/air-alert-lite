@@ -21,8 +21,10 @@ const ENEMY_LAND: Color = Color("#24262c")
 const AIR_ALERT: Color = Color("#d4a017")
 const MISSILE_ALERT: Color = Color("#e0574a")
 const BALLISTIC_ALERT: Color = MISSILE_ALERT
-# Alerts over the enemy's land (our strikes) are shown dimmed.
-const ENEMY_DIM: float = 0.5
+# Alerts over the enemy's land (our strikes) are only a dark red, close to
+# its grey: a little stronger while missiles are about.
+const ENEMY_ALERT: Color = Color("#3a282c")
+const ENEMY_MISSILE_ALERT: Color = Color("#4a2328")
 const HIT_GLOW: Color = Color("#ff8a3d")
 
 static var font: Font = ThemeDB.fallback_font

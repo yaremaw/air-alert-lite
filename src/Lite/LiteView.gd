@@ -55,9 +55,10 @@ func target(i: int) -> Color:
 	var land: Color = LiteGlyphs.OUR_LAND if r.side == 0 else LiteGlyphs.ENEMY_LAND
 	var c: Color = land
 	if sim_.alert[i]:
-		c = LiteGlyphs.MISSILE_ALERT if sim_.missile[i] else LiteGlyphs.AIR_ALERT
-		if r.side == 1:
-			c = c.lerp(land, LiteGlyphs.ENEMY_DIM)
+		if r.side == 0:
+			c = LiteGlyphs.MISSILE_ALERT if sim_.missile[i] else LiteGlyphs.AIR_ALERT
+		else:
+			c = LiteGlyphs.ENEMY_MISSILE_ALERT if sim_.missile[i] else LiteGlyphs.ENEMY_ALERT
 	if i == main.hover_region:
 		c = c.lightened(0.07)
 	var f: float = sim_.region_flash[i]

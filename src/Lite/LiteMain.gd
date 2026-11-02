@@ -65,8 +65,6 @@ func _ready() -> void:
 
 	LiteSettings.load()
 	LiteSettings.apply_sound()
-	if LiteSettings.fullscreen and shots == null:
-		LiteSettings.apply_window()
 	audio = LiteAudio.new()
 	add_child(audio)
 	new_world(seed_)
@@ -241,6 +239,16 @@ func _unhandled_input(e: InputEvent) -> void:
 			ui.show_menu()
 		get_viewport().set_input_as_handled()
 		return
+	if key != null and key.pressed and not key.echo and key.keycode == KEY_F11:
+		LiteSettings.fullscreen = not LiteSettings.fullscreen
+		LiteSettings.apply_window()
+		get_viewport().set_input_as_handled()
+		return
+	if key != null and key.pressed and not key.echo and key.keycode == KEY_T and ui.stats_view.visible:
+		ui.stats_view.visible = false
+		audio.click()
+		get_viewport().set_input_as_handled()
+		return
 	if not started or sim.winner >= 0 or ui.menu_open:
 		return
 	var mb: InputEventMouseButton = e as InputEventMouseButton
@@ -267,7 +275,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			drawing = null
 		elif mb.button_index == MOUSE_BUTTON_LEFT:
 			if build_tool != null:
-				try_build(mb.shift_pressed)
+				try_build()
 
 			elif strike_tool != null:
 				var route: Array[Vector2] = [get_global_mouse_position()]
@@ -278,7 +286,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			return
 		get_viewport().set_input_as_handled()
 
-func try_build(keep: bool) -> void:
+## The tool stays in hand after building, so several sites go down one
+## click each; right-click, Esc or its button again puts it down.
+func try_build() -> void:
 	var k: int = build_tool
 	if sim.sides[0].money < sim.cost(0, k):
 		refuse("Not enough money: %s costs $%d" % [LiteGlyphs.name(k), sim.cost(0, k)])
@@ -295,16 +305,12 @@ func try_build(keep: bool) -> void:
 			refuse("No free ground in %s" % map.regions[r].name)
 			return
 		audio.play("click.wav", -3.0)
-		if not keep:
-			build_tool = null
 		return
 	if not sim.can_place(0, mouse):
 		refuse("Build on your own territory, a little away from other sites")
 		return
 	sim.build(0, k, mouse)
 	audio.play("click.wav", -3.0)
-	if not keep:
-		build_tool = null
 
 func finish_route() -> void:
 	var pts: Array[Vector2] = drawing

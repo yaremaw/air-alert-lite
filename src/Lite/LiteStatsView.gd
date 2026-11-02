@@ -178,16 +178,37 @@ func _card_at(r: Rect2, title: String, sub: String) -> Rect2:
 
 func _overview(body: Rect2, st: LiteStats) -> void:
 	var gap: float = 14
-	var top_h: float = floorf(body.size.y * 0.54)
-	var a_w: float = floorf((body.size.x - gap) * 0.56)
-	_hours(Rect2(body.position, Vector2(a_w, top_h)), st)
-	_density(Rect2(body.position + Vector2(a_w + gap, 0), Vector2(body.size.x - a_w - gap, top_h)), st)
-	var y: float = body.position.y + top_h + gap
+	var tiles_h: float = 92
+	_tiles(Rect2(body.position, Vector2(body.size.x, tiles_h)), st)
+	var y: float = body.position.y + tiles_h + gap
 	var h: float = body.end.y - y
-	var w: float = floorf((body.size.x - 2 * gap) / 3)
-	_types(Rect2(body.position.x, y, w, h), st)
-	_alerts(Rect2(body.position.x + w + gap, y, w, h), st)
-	_regions(Rect2(body.position.x + 2 * (w + gap), y, body.end.x - body.position.x - 2 * (w + gap), h), st)
+	var a_w: float = floorf((body.size.x - gap) * 0.55)
+	_hours(Rect2(body.position.x, y, a_w, h), st)
+	_density(Rect2(body.position.x + a_w + gap, y, body.size.x - a_w - gap, h), st)
+
+## Four figures: what came at us, how much was shot down, the alerts, and the
+## longest of them.
+func _tiles(r: Rect2, st: LiteStats) -> void:
+	var total: int = st.launched[0] + st.launched[1] + st.launched[2]
+	var down: int = st.downed[0] + st.downed[1] + st.downed[2]
+	var parts: PackedStringArray = PackedStringArray()
+	for a: int in 3:
+		if st.launched[a] > 0:
+			parts.append("%d %s" % [st.launched[a], LiteGlyphs.plural(a, st.launched[a])])
+	var tiles: Array = [
+		["Launched at us", str(total), " · ".join(parts) if parts.size() > 0 else "nothing yet", LiteGlyphs.TEXT],
+		["Shot down", ("%d%%" % roundi(100.0 * down / total)) if total > 0 else "—", "%d of %d" % [down, total], LiteGlyphs.GOOD],
+		["Air alerts", str(st.alerts), ("median %s" % LiteHud.duration(st.median_alert())) if st.alert_minutes.size() > 0 else "over our regions", LiteGlyphs.YELLOW],
+		["Longest alert", LiteHud.duration(st.longest) if st.longest > 0 else "—", main.region_name(st.longest_region) if st.longest_region >= 0 else "", LiteGlyphs.TEXT],
+	]
+	var gap: float = 14
+	var w: float = (r.size.x - gap * 3) / 4
+	for i: int in 4:
+		var t:= Rect2(r.position + Vector2(i * (w + gap), 0), Vector2(w, r.size.y))
+		draw_style_box(_card, t)
+		draw_string(LiteGlyphs.font, t.position + Vector2(18, 26), tiles[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
+		draw_string(LiteGlyphs.bold, t.position + Vector2(18, 60), tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 28, tiles[i][3])
+		draw_string(LiteGlyphs.font, t.position + Vector2(18, 80), tiles[i][2], HORIZONTAL_ALIGNMENT_LEFT, w - 36, 11, LiteGlyphs.MUTED)
 
 static func _nice(v: int) -> int:
 	for n: int in [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000]:
@@ -199,8 +220,6 @@ static func _nice(v: int) -> int:
 func _hours(card: Rect2, st: LiteStats) -> void:
 	var c: Rect2 = _card_at(card, "Launches by hour", "Enemy drones and missiles launched at us in each hour of the war")
 	var total: int = st.launched[0] + st.launched[1] + st.launched[2]
-	draw_string(LiteGlyphs.bold, card.position + Vector2(0, 38), str(total), HORIZONTAL_ALIGNMENT_RIGHT, card.size.x - 18, 28, LiteGlyphs.TEXT)
-	draw_string(LiteGlyphs.font, card.position + Vector2(0, 54), "in total", HORIZONTAL_ALIGNMENT_RIGHT, card.size.x - 18, 10, LiteGlyphs.MUTED)
 	# Legend along the bottom.
 	var lx: float = c.position.x
 	for a: int in 3:
@@ -240,120 +259,44 @@ func _hours(card: Rect2, st: LiteStats) -> void:
 	if total == 0:
 		draw_string(LiteGlyphs.font, chart.get_center() + Vector2(-150, 0), "Nothing launched at us yet.", HORIZONTAL_ALIGNMENT_CENTER, 300, 12, LiteGlyphs.MUTED)
 
-## Where the enemy's routes ran, over our map.
+## Where the enemy's routes ran, over our map, and the regions they
+## crossed most.
 func _density(card: Rect2, st: LiteStats) -> void:
-	var c: Rect2 = _card_at(card, "Route density", "The brighter, the more enemy drones and missiles flew there")
+	var c: Rect2 = _card_at(card, "Where they flew", "The brighter, the more enemy drones and missiles passed")
+	var list_w: float = 150.0
 	var land: Rect2 = main.map.land_rect
-	var area:= Rect2(c.position, c.size - Vector2(0, 22))
+	var area:= Rect2(c.position, c.size - Vector2(list_w + 12, 22))
 	var k: float = minf(area.size.x / land.size.x, area.size.y / land.size.y)
 	var dst:= Rect2(area.get_center() - land.size * k / 2, land.size * k)
 	if _map_tex != null:
 		draw_texture_rect_region(_map_tex, dst, Rect2(land.position / 4.0, land.size / 4.0))
 	if _heat_tex != null:
 		draw_texture_rect_region(_heat_tex, dst, Rect2(land.position / LiteStats.CELL, land.size / LiteStats.CELL))
-	# Legend.
 	var ly: float = c.end.y - 6
-	var lx: float = c.get_center().x - 120
+	var lx: float = area.get_center().x - 80
 	draw_string(LiteGlyphs.font, Vector2(lx - 44, ly + 4), "rarer", HORIZONTAL_ALIGNMENT_RIGHT, 40, 10, LiteGlyphs.MUTED)
-	for i: int in 48:
-		draw_rect(Rect2(lx + i * 5, ly - 3, 5, 6), heat_color(i / 47.0))
-	draw_string(LiteGlyphs.font, Vector2(lx + 246, ly + 4), "more often", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.MUTED)
-
-## The mix of weapons sent at us, and how much of each was shot down.
-func _types(card: Rect2, st: LiteStats) -> void:
-	var c: Rect2 = _card_at(card, "By type", "Share of each weapon, and how much of it was shot down")
-	var total: int = st.launched[0] + st.launched[1] + st.launched[2]
-	var r: float = minf(54.0, c.size.y * 0.36)
-	var at:= Vector2(c.position.x + r + 6, c.position.y + r + 8)
-	if total == 0:
-		draw_arc(at, r, 0, TAU, 64, LiteGlyphs.LINE, 18, true)
-	else:
-		var a0: float = -PI / 2
-		for a: int in 3:
-			if st.launched[a] <= 0:
-				continue
-			var span: float = TAU * st.launched[a] / total
-			draw_arc(at, r, a0 + 0.02, a0 + span - 0.02, maxi(4, int(64 * span / TAU)), ARM_COLORS[a], 18, true)
-			a0 += span
-	draw_string(LiteGlyphs.bold, at + Vector2(-40, 6), str(total), HORIZONTAL_ALIGNMENT_CENTER, 80, 20, LiteGlyphs.TEXT)
-	draw_string(LiteGlyphs.font, at + Vector2(-40, 20), "launched", HORIZONTAL_ALIGNMENT_CENTER, 80, 10, LiteGlyphs.MUTED)
-	var lx: float = at.x + r + 22
-	var ly: float = c.position.y + 10
-	for a: int in 3:
-		draw_circle(Vector2(lx + 4, ly + 6), 4, ARM_COLORS[a], true, -1, true)
-		var pct: int = roundi(100.0 * st.launched[a] / maxi(1, total))
-		draw_string(LiteGlyphs.bold, Vector2(lx + 14, ly + 10), "%s  %d · %d%%" % [ARM_NAMES[a], st.launched[a], pct], HORIZONTAL_ALIGNMENT_LEFT, c.end.x - lx - 14, 11, LiteGlyphs.TEXT)
-		var down: String = ("shot down %d%%" % roundi(100.0 * st.downed[a] / st.launched[a])) if st.launched[a] > 0 else "none yet"
-		draw_string(LiteGlyphs.font, Vector2(lx + 14, ly + 25), down, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.MUTED)
-		ly += 38
-	var ours: int = st.our_launched[0] + st.our_launched[1] + st.our_launched[2]
-	var line: String = "Our strikes: %d launched · %d shot down · %d hits" % [ours, st.our_downed[0] + st.our_downed[1] + st.our_downed[2], st.our_hits]
-	draw_string(LiteGlyphs.font, Vector2(c.position.x, c.end.y), line, HORIZONTAL_ALIGNMENT_LEFT, c.size.x, 11, LiteGlyphs.OURS)
-
-## Air alerts over our regions: four figures and the count under alert,
-## minute by minute.
-func _alerts(card: Rect2, st: LiteStats) -> void:
-	var c: Rect2 = _card_at(card, "Air alerts", "Over our regions since the war began")
-	var tw: float = (c.size.x - 8) / 2
-	var th: float = 48.0
-	var longest: String = LiteHud.duration(st.longest) if st.longest > 0 else "—"
-	var where: String = main.region_name(st.longest_region) if st.longest_region >= 0 else ""
-	var tiles: Array = [
-		["Alerts", str(st.alerts), ""],
-		["Median length", LiteHud.duration(st.median_alert()) if st.alert_minutes.size() > 0 else "—", ""],
-		["Longest", longest, where],
-		["Most at once", "%d region%s" % [st.peak, "" if st.peak == 1 else "s"], ""],
-	]
-	for i: int in 4:
-		var tr:= Rect2(c.position + Vector2((i % 2) * (tw + 8), (i / 2) * (th + 8)), Vector2(tw, th))
-		draw_style_box(_tile, tr)
-		draw_string(LiteGlyphs.font, tr.position + Vector2(10, 16), tiles[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.MUTED)
-		draw_string(LiteGlyphs.bold, tr.position + Vector2(10, 38), tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 17, LiteGlyphs.TEXT)
-		if tiles[i][2] != "":
-			var vw: float = LiteGlyphs.bold.get_string_size(tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x
-			draw_string(LiteGlyphs.font, tr.position + Vector2(16 + vw, 38), tiles[i][2], HORIZONTAL_ALIGNMENT_LEFT, tr.size.x - vw - 24, 10, LiteGlyphs.MUTED)
-	var chart:= Rect2(c.position.x, c.position.y + 2 * th + 22, c.size.x, c.end.y - (c.position.y + 2 * th + 22))
-	var n: int = st.timeline.size()
-	if n < 2 or chart.size.y < 16:
-		return
-	var top: float = maxf(4, st.peak)
-	var pts:= PackedVector2Array()
-	pts.append(Vector2(chart.position.x, chart.end.y))
-	for i: int in n:
-		var px: float = chart.position.x + chart.size.x * i / (n - 1)
-		pts.append(Vector2(px, chart.end.y - chart.size.y * st.timeline[i] / top))
-	pts.append(Vector2(chart.end.x, chart.end.y))
-	draw_colored_polygon(pts, Color(LiteGlyphs.MISSILE_ALERT, 0.18))
-	draw_polyline(pts.slice(1, pts.size() - 1), LiteGlyphs.MISSILE_ALERT, 1.5, true)
-	draw_line(Vector2(chart.position.x, chart.end.y), Vector2(chart.end.x, chart.end.y), LiteGlyphs.LINE, 1.0)
-	draw_string(LiteGlyphs.font, chart.position + Vector2(0, -4), "regions under alert", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.FAINT)
-
-## Our regions crossed by the most enemy drones and missiles.
-func _regions(card: Rect2, st: LiteStats) -> void:
-	var c: Rect2 = _card_at(card, "Most crossed regions", "How many enemy drones and missiles flew over each")
+	for i: int in 32:
+		draw_rect(Rect2(lx + i * 5, ly - 3, 5, 6), heat_color(i / 31.0))
+	draw_string(LiteGlyphs.font, Vector2(lx + 166, ly + 4), "more often", HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.MUTED)
+	# The regions crossed most.
+	var x: float = c.end.x - list_w
+	draw_string(LiteGlyphs.bold, Vector2(x, c.position.y + 12), "Crossed most", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.TEXT)
 	var order: Array[int] = []
 	for i: int in st.crossed.size():
 		if st.crossed[i] > 0:
 			order.append(i)
 	order.sort_custom(func(a: int, b: int) -> bool: return st.crossed[a] > st.crossed[b])
 	if order.is_empty():
-		draw_string(LiteGlyphs.font, c.position + Vector2(0, 20), "Nothing has crossed our land yet.", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
+		draw_string(LiteGlyphs.font, Vector2(x, c.position.y + 34), "nothing yet", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.MUTED)
 		return
-	var rows: int = mini(order.size(), clampi(int(c.size.y / 27), 1, 7))
-	var rh: float = c.size.y / rows
 	var top: float = st.crossed[order[0]]
-	for k: int in rows:
-		var i: int = order[k]
-		var y: float = c.position.y + k * rh
-		draw_string(LiteGlyphs.font, Vector2(c.position.x, y + 12), "%d" % (k + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.FAINT)
-		draw_string(LiteGlyphs.bold, Vector2(c.position.x + 16, y + 12), main.map.regions[i].name, HORIZONTAL_ALIGNMENT_LEFT, c.size.x - 70, 12, LiteGlyphs.TEXT)
-		draw_string(LiteGlyphs.font, Vector2(c.position.x, y + 12), str(st.crossed[i]), HORIZONTAL_ALIGNMENT_RIGHT, c.size.x, 11, LiteGlyphs.MUTED)
-		var bar:= Rect2(c.position.x + 16, y + 17, c.size.x - 16, 4)
-		draw_rect(bar, LiteGlyphs.LINE)
-		var f: float = bar.size.x * st.crossed[i] / top
-		var a: Vector2 = bar.position
-		draw_polygon(PackedVector2Array([a, a + Vector2(f, 0), a + Vector2(f, 4), a + Vector2(0, 4)]),
-			PackedColorArray([LiteGlyphs.OURS, HEAT_MID.lerp(LiteGlyphs.OURS, 1 - f / bar.size.x), HEAT_MID.lerp(LiteGlyphs.OURS, 1 - f / bar.size.x), LiteGlyphs.OURS]))
+	for n: int in mini(3, order.size()):
+		var i: int = order[n]
+		var y: float = c.position.y + 38 + n * 44
+		draw_string(LiteGlyphs.bold, Vector2(x, y), main.map.regions[i].name, HORIZONTAL_ALIGNMENT_LEFT, list_w, 12, LiteGlyphs.TEXT)
+		draw_string(LiteGlyphs.font, Vector2(x, y + 16), "%d drones and missiles" % st.crossed[i], HORIZONTAL_ALIGNMENT_LEFT, list_w, 10, LiteGlyphs.MUTED)
+		draw_rect(Rect2(x, y + 22, list_w, 3), LiteGlyphs.LINE)
+		draw_rect(Rect2(x, y + 22, list_w * st.crossed[i] / top, 3), HEAT_MID)
 
 ## The large attacks, newest first.
 func _reports(body: Rect2, st: LiteStats) -> void:

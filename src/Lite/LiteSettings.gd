@@ -16,7 +16,8 @@ static func load() -> void:
 		return
 	volume = clampi(int(c.get_value("lite", "volume", volume)), 0, 3)
 	difficulty = clampi(int(c.get_value("lite", "difficulty", difficulty)), 0, 2)
-	fullscreen = bool(c.get_value("lite", "fullscreen", fullscreen))
+	# Every launch starts windowed; fullscreen is chosen in Settings or with F11.
+	fullscreen = false
 	routes = bool(c.get_value("lite", "routes", routes))
 	ranges = bool(c.get_value("lite", "ranges", ranges))
 
