@@ -56,15 +56,19 @@ The full rules are in [src/Lite/DESIGN.md](src/Lite/DESIGN.md).
 
 ## Build from source
 
-The game is plain GDScript. Open `project.godot` in [Godot 4.6+](https://godotengine.org/download)
-and press F5. To export, install the export templates and use the *Windows
-Desktop*, *macOS* or *Web* preset. The web build has to be exported with the
-standard (non-.NET) Godot editor; it is single-threaded, so it needs no special
-server headers.
+The game is plain GDScript. Open `project.godot` in [Godot 4.7](https://godotengine.org/download)
+(the standard build, not .NET) and press F5. To export, install the export
+templates and use the *Windows Desktop*, *macOS* or *Web* preset. The web build
+is single-threaded, so it needs no special server headers.
+
+The old C# version (v0.2) is kept on the `csharp` branch.
 
 ## Play in the browser
 
 https://air-alert-beta.vercel.app
+
+Every push to `main` builds the web version and deploys it there
+(`.github/workflows/deploy-web.yml`); nobody needs Vercel access to update it.
 
 ## Credits
 
