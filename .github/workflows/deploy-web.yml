@@ -68,4 +68,9 @@ jobs:
             echo "::error::The VERCEL_TOKEN repository secret is not set."
             exit 1
           fi
-          npx --yes vercel@latest deploy build/web --prod --yes --token "$VERCEL_TOKEN"
+          # Deploy from outside the git checkout: with no commit metadata the
+          # deploy belongs to the token's owner, which a Hobby (free) Vercel
+          # team needs, since it does not allow other commit authors.
+          cp -R build/web "$RUNNER_TEMP/site"
+          cd "$RUNNER_TEMP/site"
+          npx --yes vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN"
