@@ -1,4 +1,4 @@
-"""Synthesises the Air Alert sound set into a folder of 44.1 kHz mono WAVs."""
+"""Synthesises the Air Alert sound set (all but the sirens) into a folder of 44.1 kHz mono WAVs."""
 import sys, wave
 import numpy as np
 
@@ -116,42 +116,6 @@ def boom(length, low, tau, crack=0.6, bright=2400, rumble=0.5):
     return reverb(thump * 1.4 + cr + body + rum, wet=0.25, size=1.3)
 
 
-# ---------------------------------------------------------------- sirens
-
-def siren():
-    # Rises, holds with a slight wobble, falls: the classic air raid wail.
-    t = t_of(7.5)
-    up, hold, down = 2.4, 2.4, 2.7
-    f = np.where(t < up, 170 + (620 - 170) * np.sin(np.minimum(t / up, 1) * np.pi / 2) ** 1.5,
-                 np.where(t < up + hold, 620 + 8 * np.sin(2 * np.pi * 0.7 * t),
-                          620 - (620 - 160) * (np.clip(t - up - hold, 0, None) / down) ** 0.8))
-    x = osc(f, "siren") + 0.7 * osc(f * 1.006, "siren")      # two rotors, a touch apart
-    x = lowpass(x, 2600)
-    x *= env(len(t), 0.4, 1.4)
-    return reverb(x, wet=0.38, size=1.6)
-
-
-def all_clear():
-    # A calm, falling three-note chime.
-    out = np.zeros(int(SR * 3.4))
-    for k, (f, at) in enumerate([(784, 0.0), (659, 0.45), (523, 0.9)]):
-        t = t_of(2.4)
-        tone = (np.sin(2 * np.pi * f * t) + 0.35 * np.sin(2 * np.pi * 2 * f * t) + 0.12 * np.sin(2 * np.pi * 3.01 * f * t)) * decay(t, 0.75)
-        tone *= env(len(t), 0.01, 0.3)
-        i = int(at * SR)
-        out[i:i + len(tone)] += tone * (1.0 if k < 2 else 1.15)
-    return reverb(out, wet=0.35, size=1.4)
-
-
-def ballistic_warning():
-    # Fast, urgent up-and-down yelp.
-    t = t_of(2.8)
-    f = 760 + 360 * (0.5 + 0.5 * np.sign(np.sin(2 * np.pi * 3.2 * t))) * 0 + 360 * np.abs((t * 3.2) % 1 * 2 - 1)
-    x = osc(f, "siren")
-    x = lowpass(x, 3400) * env(len(t), 0.05, 0.5)
-    return reverb(x, wet=0.25, size=1.0)
-
-
 # ---------------------------------------------------------------- engines
 
 def loop_of(x, xfade=0.25):
@@ -238,9 +202,8 @@ def wreck():
     return reverb(out, wet=0.3, size=1.3)
 
 
-save("alert.wav", siren())
-save("all_clear.wav", all_clear())
-save("ballistic_warning.wav", ballistic_warning())
+# alert.wav, all_clear.wav and ballistic_warning.wav are real siren recordings
+# (see CREDITS.md), not synthesised here.
 save("drone_loop.wav", drone_loop(), 0.7)
 save("cruise_loop.wav", cruise_loop(), 0.6)
 save("gun.wav", gun(), drive=3.0)
