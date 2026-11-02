@@ -22,6 +22,7 @@ var landed: PackedInt32Array = PackedInt32Array([0, 0, 0])
 var our_launched: PackedInt32Array = PackedInt32Array([0, 0, 0])
 var our_downed: PackedInt32Array = PackedInt32Array([0, 0, 0])
 var our_hits: int = 0
+var our_landed: PackedInt32Array = PackedInt32Array([0, 0, 0])
 
 ## How often an enemy drone or missile passed through each cell.
 var heat: PackedFloat32Array = PackedFloat32Array()
@@ -82,6 +83,7 @@ func on_down(w: LiteWeapon, time: float) -> void:
 ## A weapon came down on its target: `lost` names what it destroyed.
 func on_impact(w: LiteWeapon, struck: bool, lost: PackedStringArray, capital_damage: float, time: float) -> void:
 	if w.side == 0:
+		our_landed[w.arm] += 1
 		if struck: our_hits += 1
 		return
 	landed[w.arm] += 1

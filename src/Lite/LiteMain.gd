@@ -460,7 +460,11 @@ func run_balance(seed_: int, seconds: int, seeds: int) -> void:
 		var sim_: LiteSim = LiteSim.new(map_, sd)
 		var ai0: LiteAi = LiteAi.new(0, sd + 2, 30.0)
 		ai0.waves = true
+		ai0.classic = true
+		ai0.turtle = "--lite-turtle" in OS.get_cmdline_user_args()
 		sim_.ai[0] = ai0
+		if "--lite-hard" in OS.get_cmdline_user_args():
+			sim_.income_scale[1] = ENEMY_INCOME[2]
 		var ai1: LiteAi = LiteAi.new(1, sd + 1, 22.0)
 		ai1.waves = true
 		ai1.adaptive = true
