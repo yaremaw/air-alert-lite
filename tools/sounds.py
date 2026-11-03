@@ -1,4 +1,9 @@
-"""Synthesises the Air Alert sound set (all but the sirens) into a folder of 44.1 kHz mono WAVs."""
+"""Synthesises the old Air Alert sound set into a folder of 44.1 kHz mono WAVs.
+
+The game no longer uses these: its sounds are real recordings, cut by
+tools/cut_sounds.py (see CREDITS.md). Kept as a synthesised fallback; do not
+point it at assets/audio unless you want them back.
+"""
 import sys, wave
 import numpy as np
 

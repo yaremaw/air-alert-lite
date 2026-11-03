@@ -56,10 +56,15 @@ func play(file: String, db: float = 0.0, gap: float = 0.06, pitch_jitter: float 
 	p.pitch_scale = 1.0 + (_rng.randf() * 2 - 1) * pitch_jitter
 	p.play()
 
-## A looping sound whose loudness follows `level` (0 silent, 1 full) with a
-## gentle fade; at full it plays at `max_db`.
-func loop(file: String, level: float, max_db: float, delta: float) -> void:
-	var p: AudioStreamPlayer = _loops.get(file) as AudioStreamPlayer
+## A looping sound whose loudness follows `level` (0 silent, 1 full), fading
+## at `fade` of full per second; at full it plays at `max_db`. `key` lets one
+## file loop on several players; `from_start` starts it at its beginning
+## rather than somewhere inside.
+func loop(file: String, level: float, max_db: float, delta: float, fade: float = 1.2,
+		key: String = "", from_start: bool = false) -> void:
+	if key == "":
+		key = file
+	var p: AudioStreamPlayer = _loops.get(key) as AudioStreamPlayer
 	if p == null:
 		var src: AudioStreamWAV = _stream(file) as AudioStreamWAV
 		if src == null:
@@ -73,15 +78,15 @@ func loop(file: String, level: float, max_db: float, delta: float) -> void:
 		p.bus = "Master"
 		p.volume_db = -60.0
 		add_child(p)
-		_loops[file] = p
-	var cur: float = move_toward(float(_loop_level.get(file, 0.0)), level, delta * 1.2)
-	_loop_level[file] = cur
+		_loops[key] = p
+	var cur: float = move_toward(float(_loop_level.get(key, 0.0)), level, delta * fade)
+	_loop_level[key] = cur
 	if cur <= 0.01:
 		if p.playing:
 			p.stop()
 		return
 	if not p.playing:
-		p.play(_rng.randf() * 3.0)
+		p.play(0.0 if from_start else _rng.randf() * p.stream.get_length())
 	p.volume_db = max_db + linear_to_db(cur)
 
 func click() -> void:

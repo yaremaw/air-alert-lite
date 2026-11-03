@@ -98,9 +98,9 @@ func _particles(dt: float) -> void:
 					_parts.launch(f.a)
 				else:
 					# A SAM firing: ours loud, the enemy's far off.
-					main.audio.play("sam_launch.wav", -9.0 if f.side == 0 else -19.0, 0.15)
+					main.audio.play("sam_launch.wav", -13.0 if f.side == 0 else -23.0, 0.15)
 			LiteFxKind.TRACER:
-				main.audio.play("gun.wav", -14.0 if f.side == 0 else -23.0, 0.2)
+				main.gun_shot_at[f.side] = sim_.time
 			LiteFxKind.PUFF:
 				_parts.puff(f.a, f.size)
 	_known = known

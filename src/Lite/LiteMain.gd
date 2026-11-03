@@ -25,6 +25,8 @@ var drawing: Variant = null
 var _view: LiteView
 var _end_timer: float = -1
 var _last_capital_post: float = -99
+## When each side's guns last fired (sim time), so their sound lasts as long as the firing.
+var gun_shot_at: Array[float] = [-99.0, -99.0]
 var _autoplay: bool = false
 
 var _fake_mouse: Variant = null
@@ -91,6 +93,7 @@ func new_world(seed_: int) -> void:
 	var t0: int = Time.get_ticks_msec()
 	map = LiteMap.for_seed(seed_)
 	sim = LiteSim.new(map, seed_)
+	gun_shot_at = [-99.0, -99.0]
 	print("[lite] map %d: %d regions in %d ms" % [seed_, map.regions.size(), Time.get_ticks_msec() - t0])
 	if _view != null:
 		_view.queue_free()
@@ -212,7 +215,8 @@ func engine_sounds(delta: float) -> void:
 		return
 	var drones: int = 0
 	var cruise: int = 0
-	if started and not paused and not ui.menu_open and sim.winner < 0:
+	var live: bool = started and not paused and not ui.menu_open and sim.winner < 0
+	if live:
 		for w: LiteWeapon in sim.weapons:
 			if not w.alive or w.side != 1 or not w.seen[0] or w.arm == LiteArm.BALLISTIC:
 				continue
@@ -222,8 +226,15 @@ func engine_sounds(delta: float) -> void:
 				drones += 1
 			else:
 				cruise += 1
-	audio.loop("drone_loop.wav", (0.3 + 0.7 * minf(1.0, drones / 10.0)) if drones > 0 else 0.0, -11.0, delta)
-	audio.loop("cruise_loop.wav", (0.4 + 0.6 * minf(1.0, cruise / 5.0)) if cruise > 0 else 0.0, -13.0, delta)
+	audio.loop("drone_loop.wav", (0.3 + 0.7 * minf(1.0, drones / 10.0)) if drones > 0 else 0.0, -23.0, delta)
+	audio.loop("cruise_loop.wav", (0.4 + 0.6 * minf(1.0, cruise / 5.0)) if cruise > 0 else 0.0, -17.0, delta)
+	# The siren wails for as long as any of our regions is under alert.
+	audio.loop("alert_loop.wav", 1.0 if live and _our_alert() else 0.0, -10.0, delta, 0.6, "", true)
+	# Guns sound while they fire and stop with them: a gun shoots every GUN_INTERVAL.
+	for side: int in 2:
+		var since: float = sim.time - gun_shot_at[side]
+		var firing: bool = live and since >= 0.0 and since < LiteRules.GUN_INTERVAL + 0.15
+		audio.loop("gun_loop.wav", 1.0 if firing else 0.0, -18.0 if side == 0 else -27.0, delta, 14.0, "gun_%d" % side)
 
 func update_hover() -> void:
 	hover_building = null
@@ -396,7 +407,6 @@ func handle_events() -> void:
 				if e.side != 0:
 					continue
 				ui.post("Air alert in %s. Take cover." % region_name(e.region), LiteGlyphs.YELLOW)
-				audio.siren("alert.wav", -8.0)
 			LiteEv.ALL_CLEAR:
 				if e.side == 0:
 					ui.post("All clear. The alert lasted %s." % LiteHud.duration(e.value), LiteGlyphs.GOOD)
@@ -404,21 +414,21 @@ func handle_events() -> void:
 						audio.siren("all_clear.wav", -10.0)
 			LiteEv.LAUNCH:
 				if e.side == 0:
-					audio.play("launch.wav", -15.0, 0.15)
+					audio.play("launch.wav", -19.0, 0.15)
 					continue
 				if e.arm == LiteArm.BALLISTIC:
 					ui.post("Ballistic launch! Heading for %s." % region_name(e.region), LiteGlyphs.BALLISTIC_ALERT)
-					audio.play("ballistic_warning.wav", -6.0, 4.0, 0.0)
+					audio.play("ballistic_warning.wav", -9.0, 4.0, 0.0)
 			LiteEv.DETECTED:
 				if e.side != 1 or e.raid == null or e.raid.reported:
 					continue
 				e.raid.reported = true
 				ui.post("Enemy %s spotted over %s." % [LiteGlyphs.plural(e.arm, 2), region_name(e.region)], LiteGlyphs.YELLOW)
 			LiteEv.SHOT_DOWN:
-				audio.play("intercept.wav", -11.0 if e.side == 0 else -18.0, 0.08)
+				audio.play("intercept.wav", -15.0 if e.side == 0 else -22.0, 0.08)
 			LiteEv.HIT:
 				var on_us: bool = e.side == 1
-				audio.play("explosion_small_a.wav" if e.arm == LiteArm.DRONE else "explosion_a.wav", -7.0 if on_us else -15.0, 0.06)
+				audio.play("explosion_small_a.wav" if e.arm == LiteArm.DRONE else "explosion_a.wav", -11.0 if on_us else -19.0, 0.06)
 			LiteEv.CAPITAL_HIT:
 				if sim.time - _last_capital_post < 4:
 					continue
@@ -434,7 +444,7 @@ func handle_events() -> void:
 					ui.post("Our %s destroyed in %s." % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.ENEMY)
 				else:
 					ui.post("Enemy %s destroyed in %s." % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.GOOD)
-				audio.play("wreck.wav", -9.0, 0.2)
+				audio.play("wreck.wav", -13.0, 0.2)
 			LiteEv.BUILT:
 				if e.side == 0:
 					audio.play("click_off.wav", -12.0)
@@ -447,7 +457,8 @@ func handle_events() -> void:
 				if e.side != 1:
 					continue
 				ui.post("Intelligence: the enemy is massing drones and missiles for a large strike. Ready the air defence.", LiteGlyphs.BALLISTIC_ALERT)
-				audio.siren("alert.wav", -6.0)
+				if not _our_alert():
+					audio.siren("alert.wav", -9.0)
 			LiteEv.REPORT:
 				var rep: LiteReport = sim.stats.reports[int(e.value)]
 				ui.post("Attack report: %d drones and missiles, %d shot down. Press T for all reports." % [rep.total, rep.total_downed], LiteGlyphs.OURS)
@@ -468,7 +479,7 @@ func handle_events() -> void:
 				_end_timer = 2.0
 				build_tool = null
 				strike_tool = null
-				audio.play("explosion_b.wav", -2.0)
+				audio.play("explosion_b.wav", -5.0)
 	sim.events.clear()
 
 func show_end() -> void:
