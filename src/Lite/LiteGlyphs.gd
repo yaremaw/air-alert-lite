@@ -40,10 +40,12 @@ static func load_fonts() -> void:
 		return
 	_loaded = true
 	const PATH: String = "res://assets/fonts/Inter.ttf"
-	if not FileAccess.file_exists(PATH):
+	# Through the resource loader: an exported game holds only the imported font, not
+	# the .ttf file itself, so reading the file directly finds nothing there.
+	if not ResourceLoader.exists(PATH):
 		return
-	var f:= FontFile.new()
-	if f.load_dynamic_font(PATH) != OK:
+	var f: FontFile = load(PATH) as FontFile
+	if f == null:
 		return
 	f.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
 	f.hinting = TextServer.HINTING_LIGHT
