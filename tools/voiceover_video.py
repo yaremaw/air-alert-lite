@@ -1,4 +1,4 @@
-"""A 2.5-minute video for a voice-over: six questions players ask about Strike Alert,
+"""A 3-minute video for a voice-over: six questions players ask about Strike Alert,
 each answered with a staged scene recorded from the game. A cinematic cold open (the
 3D interception from tools/intercept_video.py), a title, then for each question a
 glitching question card and the scene, graded and grained, with a handheld camera that
@@ -264,15 +264,29 @@ def timeline(quiet=False):
 # ---------------------------------------------------------------- look
 
 def make_vignette():
+    """The vignette as a 0..128 scale, in integers (so 255 x 128 still fits an int16)."""
     y, x = np.mgrid[0:H, 0:W].astype(np.float32)
     r = np.sqrt(((x - W / 2) / (W / 2)) ** 2 + ((y - H / 2) / (H / 2)) ** 2)
-    return (1.0 - 0.42 * np.clip(r - 0.35, 0, None) ** 1.6).astype(np.float32)[..., None]
+    v = 1.0 - 0.42 * np.clip(r - 0.35, 0, None) ** 1.6
+    return np.round(v * 128).astype(np.int16)[..., None]
 
 
 def make_grain(rng):
     small = rng.normal(0, 1, (H // 2, W // 2)).astype(np.float32)
     g = np.asarray(Image.fromarray(small).resize((W, H), Image.BILINEAR), np.float32)
-    return (g * 7.0)[..., None]
+    return np.round(g * 7.0).astype(np.int16)[..., None]
+
+
+def make_luts():
+    """Per channel: more contrast, cold shadows, warm highlights."""
+    v = np.arange(256, dtype=np.float32)
+    base = (v - 128.0) * 1.12 + 128.0
+    shadow = np.clip((110 - v) / 110, 0, 1)
+    high = np.clip((v - 140) / 115, 0, 1)
+    luts = []
+    for cold, warm in ((-4.0, 6.0), (1.0, 2.0), (7.0, -5.0)):
+        luts.append(np.clip(base + shadow * cold * 1.4 + high * warm, 0, 255).astype(np.uint8))
+    return luts
 
 
 class Look:
@@ -280,18 +294,21 @@ class Look:
         self.rng = np.random.default_rng(seed)
         self.vig = make_vignette()
         self.grains = [make_grain(self.rng) for _ in range(5)]
+        self.luts = make_luts()
 
     def grade(self, f, flash=0.0, chroma=0):
         """Contrast, a cold tint in the shadows and warm highlights, vignette, grain."""
-        x = f.astype(np.float32)
-        lum = x.mean(axis=2, keepdims=True)
-        x = (x - 128.0) * 1.12 + 128.0
-        x += (lum < 90) * np.array([-4.0, 1.0, 7.0], np.float32) + (lum > 150) * np.array([6.0, 2.0, -5.0], np.float32)
+        x = np.empty(f.shape, np.int16)
+        for c in range(3):
+            x[:, :, c] = self.luts[c][f[:, :, c]]
         if flash > 0:
-            x = x + flash * (255.0 - x) * 0.55 + flash * 40
+            k = int(flash * 0.55 * 128)
+            x += ((255 - x) * k >> 7) + int(flash * 40)
         x *= self.vig
+        x >>= 7
         x += self.grains[self.rng.integers(len(self.grains))]
-        out = np.clip(x, 0, 255).astype(np.uint8)
+        np.clip(x, 0, 255, out=x)
+        out = x.astype(np.uint8)
         if chroma:
             out[:, :, 0] = np.roll(out[:, :, 0], chroma, axis=1)
             out[:, :, 2] = np.roll(out[:, :, 2], -chroma, axis=1)
@@ -325,8 +342,7 @@ def camera(src, box, dx, dy):
     h = w * 9 / 16
     x = min(max(x + dx, 0), W - w)
     y = min(max(y + dy, 0), H - h)
-    im = Image.fromarray(src).transform((W, H), Image.EXTENT, (x, y, x + w, y + h), Image.BILINEAR)
-    return np.asarray(im)
+    return np.asarray(Image.fromarray(src).resize((W, H), Image.BILINEAR, box=(x, y, x + w, y + h)))
 
 
 # ---------------------------------------------------------------- overlays
@@ -422,7 +438,7 @@ class Guide:
 def blur_bg(rec, src, sec):
     f = next(read_frames(movie_of(rec, src), int(round(sec * FPS)), 1))
     im = Image.fromarray(f).filter(ImageFilter.GaussianBlur(16))
-    return np.asarray(im).astype(np.float32) * np.array([0.30, 0.22, 0.22], np.float32)
+    return np.asarray(im).astype(np.float32) * np.array([0.50, 0.40, 0.40], np.float32)
 
 
 def scanlines(x):
@@ -834,7 +850,7 @@ def main():
     bed = sound(rec, int(round(frames / FPS * SR)))
     raw_wav = os.path.join(tmp, "bed.wav")
     write_wav(raw_wav, bed)
-    # The bed sits around -20 LUFS, a few dB under where a voice will go.
+    # loudnorm aims at -20 LUFS; with the long quiet stretches the bed measures about -22.
     subprocess.run([FF, "-hide_banner", "-loglevel", "error", "-y", "-i", raw_wav, "-af",
                     "loudnorm=I=-20:TP=-2:LRA=14", "-ar", str(SR), base + "-bed.wav"], check=True)
     for name, out in (("shot", base + "-16x9.mp4"), ("guide", base + "-guide.mp4")):
