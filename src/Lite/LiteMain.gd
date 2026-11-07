@@ -31,6 +31,7 @@ var _autoplay: bool = false
 
 var _fake_mouse: Variant = null
 
+
 const ENEMY_INCOME: Array[float] = [0.8, 1.1, 1.3]
 const ENEMY_WAR_SHARE: Array[float] = [0.4, 0.5, 0.55]
 const ENEMY_TEMPO: Array[float] = [1.3, 1.0, 0.85]
@@ -67,6 +68,8 @@ func _ready() -> void:
 
 	LiteSettings.load()
 	LiteSettings.apply_sound()
+	if not OS.has_feature("web"):
+		DisplayServer.window_set_title("Strike Alert")
 	audio = LiteAudio.new()
 	add_child(audio)
 	new_world(seed_)
@@ -114,6 +117,17 @@ func fit_view() -> void:
 	var off: Vector2 = frame.get_center() - land.get_center() * k
 	get_viewport().canvas_transform = Transform2D(0, Vector2(k, k), 0, off)
 
+
+## Back to the home screen after a war ends, with a fresh map ready for the next war.
+func to_title() -> void:
+	started = false
+	paused = true
+	build_tool = null
+	strike_tool = null
+	_end_timer = -1
+	new_world((seed * 7919 + 104729) % 1000003)
+	ui.clear_feed()
+	ui.show_menu()
 
 ## A point on the map to a point on the screen (for the HUD).
 func to_screen(p: Vector2) -> Vector2:
@@ -201,6 +215,8 @@ func _process(delta: float) -> void:
 			sim.step(h)
 			dt -= h
 		LitePerf.sim_ms += LitePerf.now - t0
+	# The home screen's picture covers the map: no need to draw the map under it.
+	_view.visible = not ui.home_open
 	handle_events()
 	engine_sounds(delta)
 	if _end_timer > 0:
@@ -268,6 +284,10 @@ func _unhandled_input(e: InputEvent) -> void:
 			strike_tool = null
 		elif started and sim.winner < 0:
 			ui.show_menu()
+		get_viewport().set_input_as_handled()
+		return
+	if key != null and key.pressed and not key.echo and (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and ui.home_open:
+		ui.enter()
 		get_viewport().set_input_as_handled()
 		return
 	if key != null and key.pressed and not key.echo and key.keycode == KEY_F11:

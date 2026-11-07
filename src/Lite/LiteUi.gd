@@ -20,14 +20,16 @@ var _menu: Control = null
 var _new_game: Control = null
 var _settings: Control = null
 var _end: Control = null
-var _continue: Button = null
-var _new_game_button: Button = null
-var _menu_sub: Label = null
+var home: LiteHome = null
 var _end_title: Label = null
 var _end_text: Label = null
 
 var menu_open: bool:
 	get: return _menu.visible or _new_game.visible or _settings.visible or stats_view.visible
+
+## The home screen or one of the screens it opens (New war, Settings).
+var home_open: bool:
+	get: return _menu.visible or _new_game.visible or _settings.visible
 
 const BUILD_KINDS: Array[int] = [LiteKind.FACTORY, LiteKind.GUN, LiteKind.SAM]
 const ARMS: Array[int] = [LiteArm.DRONE, LiteArm.CRUISE, LiteArm.BALLISTIC]
@@ -283,24 +285,25 @@ static func _quiet(b: Button, quiet: bool) -> void:
 	b.add_theme_color_override("font_hover_color", Color.WHITE)
 
 static func _title(box: VBoxContainer, title: String) -> void:
-	box.add_child(_text("STRIKE ALERT · LITE", 11, LiteGlyphs.MUTED, true))
-	box.add_child(_text(title, 34, LiteGlyphs.TEXT, true))
+	var head:= _text("STRIKE ALERT", 12, LiteGlyphs.ENEMY, true)
+	head.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(head)
+	var t:= _text(title, 34, LiteGlyphs.TEXT, true)
+	t.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(t)
 
+## The home screen (and the pause menu): see LiteHome.
 func _build_menu(root: Control) -> Control:
-	var ob: Array = _overlay(root, 360)
-	var o: Control = ob[0]
-	var box: VBoxContainer = ob[1]
-	_title(box, "Air Alert")
-	_menu_sub = _text("", 13, LiteGlyphs.MUTED)
-	box.add_child(_menu_sub)
-	_continue = _wide(box, "Continue", true, close_menu)
-	_new_game_button = _wide(box, "New war", true, func() -> void: _show_screen(_new_game))
-	_wide(box, "Settings", false, func() -> void: _show_screen(_settings))
-
-	if not OS.has_feature("web"):
-		_wide(box, "Quit", false, func() -> void: main.get_tree().quit())
-	box.add_child(_text("Esc opens this menu during the war", 11, LiteGlyphs.FAINT))
-	return o
+	home = LiteHome.new()
+	home.main = main
+	home.visible = false
+	root.add_child(home)
+	home.build()
+	home.on_continue = close_menu
+	home.on_new_war = func() -> void: _show_screen(_new_game)
+	home.on_settings = func() -> void: _show_screen(_settings)
+	home.on_quit = func() -> void: main.get_tree().quit()
+	return home
 
 func _build_new_game(root: Control) -> Control:
 	var ob: Array = _overlay(root, 500)
@@ -390,18 +393,29 @@ func _build_end(root: Control) -> Control:
 		show_menu())
 	return o
 
+## The home screen stays behind New war and Settings (their dim lies over it).
 func _show_screen(screen: Control) -> void:
-	_menu.visible = screen == _menu
+	_menu.visible = screen != null
 	_new_game.visible = screen == _new_game
 	_settings.visible = screen == _settings
 
 func show_menu() -> void:
-	var live: bool = main.started and main.sim.winner < 0
-	_continue.visible = live
-	_quiet(_new_game_button, live)
-	_menu_sub.text = ("The war is paused · %s" % main.clock_text(main.sim.time, true)) if live else "An air war on a live air-alert map."
+	if main.started and main.sim.winner >= 0:
+		main.to_title()          # after a war ends, back to the home screen's own war
+		return
+	var live: bool = main.started
+	home.set_live(live, ("The war is paused · %s" % main.clock_text(main.sim.time, true)) if live
+		else "A real-time air war on a live air-alert map.")
 	_end.visible = false
 	_show_screen(_menu)
+
+## Enter: Start on the New war screen, the leading item on the home screen.
+func enter() -> void:
+	if _new_game.visible:
+		_show_screen(null)
+		main.new_game()
+	elif _menu.visible and not _settings.visible:
+		home.activate_primary()
 
 func show_settings() -> void:
 	_show_screen(_settings)
@@ -478,7 +492,8 @@ func _process(_delta: float) -> void:
 		_window[i].selected = LiteSettings.fullscreen == (i == 1)
 		_routes[i].selected = LiteSettings.routes == (i == 0)
 		_ranges[i].selected = LiteSettings.ranges == (i == 0)
-	_panel.visible = main.started
+	_panel.visible = main.started and not home_open
+	hud.visible = not home_open
 	for i in 4:
 		_speed[i].selected = main.paused if i == 0 else (not main.paused and main.speed == SPEEDS[i])
 	var on: bool = main.sim.sams_on_drones[0]

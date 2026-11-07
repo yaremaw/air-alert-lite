@@ -29,6 +29,7 @@ const HIT_GLOW: Color = Color("#ff8a3d")
 
 static var font: Font = ThemeDB.fallback_font
 static var bold: Font = ThemeDB.fallback_font
+static var black: Font = ThemeDB.fallback_font
 static var _loaded: bool = false
 
 static func side_color(side: int) -> Color:
@@ -57,6 +58,11 @@ static func load_fonts() -> void:
 	heavy.variation_embolden = 0.6
 	font = regular
 	bold = heavy
+	# The heaviest cut of Inter (weight 900), for the logo and the home screen's menu.
+	var heaviest:= FontVariation.new()
+	heaviest.base_font = f
+	heaviest.variation_opentype = { TextServerManager.get_primary_interface().name_to_tag("wght"): 900 }
+	black = heaviest
 
 	font.set_cache_capacity(512, 64)
 	bold.set_cache_capacity(512, 64)

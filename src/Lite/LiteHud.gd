@@ -125,7 +125,7 @@ func _draw_badge() -> void:
 	draw_arc(c, 5, 0, TAU, 24, Color(1, 1, 1, 0.7), 1.2, true)
 	draw_line(c, c + Vector2(8, -6), Color.WHITE, 1.6, true)
 	draw_circle(c, 1.6, Color.WHITE, true, -1.0, true)
-	draw_string(LiteGlyphs.font, Vector2(at.x + 46, at.y + 14), "strike alert · lite", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
+	draw_string(LiteGlyphs.black, Vector2(at.x + 46, at.y + 14), "STRIKE ALERT", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.MUTED)
 	draw_string(LiteGlyphs.bold, Vector2(at.x + 46, at.y + 32), main.clock_text(main.sim.time, true), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LiteGlyphs.TEXT)
 	if main.paused and main.sim.winner < 0:
 		draw_string(LiteGlyphs.bold, Vector2(at.x + 46, at.y - 8), "PAUSED · Space to resume", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.YELLOW)
