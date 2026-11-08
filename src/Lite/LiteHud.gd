@@ -118,13 +118,9 @@ func _draw_alert_card() -> void:
 func _draw_badge() -> void:
 	var at:= Vector2(22, size.y - 58)
 	var logo:= Rect2(at, Vector2(36, 36))
-	var box: StyleBoxFlat = LiteGlyphs.box(LiteGlyphs.OURS, LiteGlyphs.OURS, 8)
+	var box: StyleBoxFlat = LiteGlyphs.box(LiteGlyphs.PAGE, LiteGlyphs.LINE, 8)
 	draw_style_box(box, logo)
-	var c: Vector2 = logo.get_center()
-	draw_arc(c, 10, 0, TAU, 32, Color.WHITE, 1.6, true)
-	draw_arc(c, 5, 0, TAU, 24, Color(1, 1, 1, 0.7), 1.2, true)
-	draw_line(c, c + Vector2(8, -6), Color.WHITE, 1.6, true)
-	draw_circle(c, 1.6, Color.WHITE, true, -1.0, true)
+	LiteLogo.draw_mark(self, logo.get_center(), 11.5)
 	draw_string(LiteGlyphs.black, Vector2(at.x + 46, at.y + 14), "STRIKE ALERT", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.MUTED)
 	draw_string(LiteGlyphs.bold, Vector2(at.x + 46, at.y + 32), main.clock_text(main.sim.time, true), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LiteGlyphs.TEXT)
 	if main.paused and main.sim.winner < 0:

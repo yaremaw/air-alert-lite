@@ -12,7 +12,7 @@ static var ranges: bool = true
 
 static func load() -> void:
 	var c:= ConfigFile.new()
-	if c.load(PATH) != OK:
+	if c.load(PATH) != OK and c.load(_old_path()) != OK:
 		return
 	volume = clampi(int(c.get_value("lite", "volume", volume)), 0, 3)
 	difficulty = clampi(int(c.get_value("lite", "difficulty", difficulty)), 0, 2)
@@ -20,6 +20,12 @@ static func load() -> void:
 	fullscreen = false
 	routes = bool(c.get_value("lite", "routes", routes))
 	ranges = bool(c.get_value("lite", "ranges", ranges))
+
+## Until version 1.1 the project was called "Air Alert", and Godot keeps a
+## desktop game's files in a folder named after the project: read the old one's
+## settings once, so players keep them. (The web version's folder never moved.)
+static func _old_path() -> String:
+	return OS.get_user_data_dir().get_base_dir().path_join("Air Alert").path_join(PATH.get_file())
 
 static func save() -> void:
 	var c:= ConfigFile.new()
