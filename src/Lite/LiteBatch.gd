@@ -15,23 +15,66 @@ var _circles: Array[PackedVector2Array] = []
 var _at: PackedVector2Array = PackedVector2Array()
 var _item: RID = RID()
 
+## Soft puffs (smoke, fire, flashes) are not built from triangles: each is one
+## square drawn with a soft round texture, two triangles however big it is.
+## They are kept apart and sent in their own batch; whenever the drawing
+## switches between puffs and other shapes, what came first is sent first, so
+## everything still lands in the order it was drawn.
+var _sp: PackedVector2Array = PackedVector2Array()
+var _sc: PackedColorArray = PackedColorArray()
+var _su: PackedVector2Array = PackedVector2Array()
+var _si: PackedInt32Array = PackedInt32Array()
+var _snp: int = 0
+var _sni: int = 0
+static var _soft: ImageTexture = null
+
 func _init() -> void:
 	_p.resize(8192)
 	_c.resize(8192)
 	_i.resize(24576)
 	_unit.resize(66)
 	_circles.resize(65)
+	_sp.resize(4096)
+	_sc.resize(4096)
+	_su.resize(4096)
+	_si.resize(6144)
+	if _soft == null:
+		_soft = _make_soft()
+
+## The puff texture: white, its alpha 1 in the middle easing to 0 at the rim.
+static func _make_soft() -> ImageTexture:
+	const N: int = 64
+	var img: Image = Image.create_empty(N, N, false, Image.FORMAT_RGBA8)
+	for y: int in N:
+		for x: int in N:
+			var d: float = Vector2(x + 0.5 - N * 0.5, y + 0.5 - N * 0.5).length() / (N * 0.5)
+			var a: float = pow(maxf(0.0, 1.0 - d * d), 1.6)
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	return ImageTexture.create_from_image(img)
 
 func begin(ci: CanvasItem) -> void:
 	_item = ci.get_canvas_item()
 	_np = 0
 	_ni = 0
+	_snp = 0
+	_sni = 0
 
 func flush() -> void:
+	_flush_shapes()
+	_flush_soft()
+
+func _flush_shapes() -> void:
 	if _ni > 0:
 		RenderingServer.canvas_item_add_triangle_array(_item, _i.slice(0, _ni), _p.slice(0, _np), _c.slice(0, _np))
 	_np = 0
 	_ni = 0
+
+func _flush_soft() -> void:
+	if _sni > 0:
+		RenderingServer.canvas_item_add_triangle_array(_item, _si.slice(0, _sni), _sp.slice(0, _snp), _sc.slice(0, _snp),
+			_su.slice(0, _snp), PackedInt32Array(), PackedFloat32Array(), _soft.get_rid())
+	_snp = 0
+	_sni = 0
 
 func _vert(p: Vector2, c: Color) -> int:
 	_p[_np] = p
@@ -55,8 +98,10 @@ func _quad(a: int, b: int, c: int, d: int) -> void:
 	_ni += 6
 
 func _room(verts: int) -> void:
+	if _sni > 0:
+		_flush_soft()
 	if _np + verts > MAX_VERTS:
-		flush()
+		_flush_shapes()
 	if _np + verts > _p.size():
 		var n: int = maxi(_p.size() * 2, _np + verts)
 		_p.resize(n)
@@ -212,11 +257,121 @@ func disc(c: Vector2, r: float, col: Color, soft: bool = true) -> void:
 			_i[_ni + 5] = b
 			_ni += 6
 
+## A soft round puff: `col` in the middle, thinning out to nothing at `r`.
+## Smoke, fire and flashes are drawn with it, so they blend instead of
+## stacking up as hard-edged circles.
+func puff(c: Vector2, r: float, col: Color) -> void:
+	puff_lit(c, r, col, col, Vector2.ZERO)
+
+## A soft puff shaded like a ball lit from `light` (a unit vector, or zero for
+## flat): `lit` on the side towards the light, `dark` on the far side.
+## Fireballs and smoke are drawn with it, so they look round rather than
+## flat. One textured square: its corners take the shading, the texture the
+## soft round edge.
+func puff_lit(c: Vector2, r: float, lit: Color, dark: Color, light: Vector2) -> void:
+	if lit.a < 0.004 or r < 0.3:
+		return
+	if _ni > 0:
+		_flush_shapes()
+	if _snp + 4 > _sp.size():
+		var n: int = _sp.size() * 2
+		_sp.resize(n)
+		_sc.resize(n)
+		_su.resize(n)
+		_si.resize(n * 3 / 2)
+	var k: int = _snp
+	for j: int in 4:
+		var u:= Vector2(-1.0 if j == 0 or j == 3 else 1.0, -1.0 if j < 2 else 1.0)
+		_sp[k + j] = c + u * r
+		_su[k + j] = Vector2(0.0 if u.x < 0 else 1.0, 0.0 if u.y < 0 else 1.0)
+		_sc[k + j] = dark.lerp(lit, 0.5 + 0.5 * u.dot(light) * 0.7071)
+	_snp = k + 4
+	var q: int = _sni
+	_si[q] = k
+	_si[q + 1] = k + 1
+	_si[q + 2] = k + 2
+	_si[q + 3] = k
+	_si[q + 4] = k + 2
+	_si[q + 5] = k + 3
+	_sni = q + 6
+
+## A tongue of flame standing on `base`, `h` tall along `up` (a unit vector,
+## which may lean) and `w` wide: hot `hot` low in its middle, cooler `cool`
+## higher up, soft all round and thinning to a point. Eleven vertices.
+func flame(base: Vector2, up: Vector2, h: float, w: float, hot: Color, cool: Color) -> void:
+	if hot.a < 0.004:
+		return
+	_room(12)
+	var across:= Vector2(-up.y, up.x)
+	var clear_hot:= Color(hot, 0.0)
+	var clear_cool:= Color(cool, 0.0)
+	var k: int = _np
+	_vert(base + up * (h * 0.18), hot)
+	_vert(base + up * (h * 0.55), cool)
+	_vert(base + up * h, clear_cool)
+	_vert(base + across * (w * 0.75) + up * (h * 0.45), clear_cool)
+	_vert(base - across * (w * 0.75) + up * (h * 0.45), clear_cool)
+	# The round bottom: a half circle from one side, under, to the other.
+	for s: int in 6:
+		var a: float = PI * s / 5.0
+		_vert(base + (across * cos(a) - up * sin(a)) * w, clear_hot)
+	# Fan from the hot middle round the bottom.
+	for s: int in 5:
+		_tri(k, k + 5 + s, k + 6 + s)
+	_tri(k, k + 10, k + 4)
+	_tri(k, k + 4, k + 1)
+	_tri(k + 1, k + 4, k + 2)
+	_tri(k + 1, k + 2, k + 3)
+	_tri(k, k + 1, k + 3)
+	_tri(k, k + 3, k + 5)
+
+## A soft ribbon along `pts`, joined smoothly from point to point: at each
+## point its colour along the middle, fading to nothing `half` to either side.
+## Smoke trails are drawn with it, so they have no joints or hard edges.
+func ribbon(pts: PackedVector2Array, half: PackedFloat32Array, cols: PackedColorArray) -> void:
+	var n: int = pts.size()
+	if n < 2:
+		return
+	_room(n * 3 + 3)
+	var first: int = _np
+	for k: int in n:
+		var d: Vector2
+		if k == 0:
+			d = pts[1] - pts[0]
+		elif k == n - 1:
+			d = pts[k] - pts[k - 1]
+		else:
+			d = pts[k + 1] - pts[k - 1]
+		var l: float = d.length()
+		var across: Vector2 = Vector2(-d.y, d.x) / l if l > 0.0001 else Vector2(0, 1)
+		var c: Color = cols[k]
+		var clear:= Color(c, 0.0)
+		_p[_np] = pts[k] + across * half[k]
+		_c[_np] = clear
+		_p[_np + 1] = pts[k]
+		_c[_np + 1] = c
+		_p[_np + 2] = pts[k] - across * half[k]
+		_c[_np + 2] = clear
+		_np += 3
+	for k: int in n - 1:
+		var a: int = first + k * 3
+		var b: int = a + 3
+		_quad(a, a + 1, b + 1, b)
+		_quad(a + 1, a + 2, b + 2, b + 1)
+
 func ring(c: Vector2, r: float, col: Color, width: float, from: float = 0, to: float = TAU) -> void:
 	var span: float = to - from
 	var n: int = clampi(int(_segments(r) * absf(span) / TAU) + 1, 3, 64)
 	_room((n + 1) * 4)
-	_make_unit(n, from, span)
+	# A whole ring uses the circle worked out once; an arc its own points.
+	var unit: PackedVector2Array = _unit
+	if absf(span) >= TAU - 0.0001:
+		if _circles[n].is_empty():
+			_make_unit(n, 0, TAU)
+			_circles[n] = _unit.slice(0, n + 1)
+		unit = _circles[n]
+	else:
+		_make_unit(n, from, span)
 	var h: float = maxf(0.05, width * 0.5 - FEATHER * 0.5)
 	var o: float = h + FEATHER
 	if width < FEATHER:
@@ -224,7 +379,7 @@ func ring(c: Vector2, r: float, col: Color, width: float, from: float = 0, to: f
 	var clear:= Color(col, 0.0)
 	var first: int = _np
 	for s: int in n + 1:
-		var u: Vector2 = _unit[s]
+		var u: Vector2 = unit[s]
 		_p[_np] = c + u * (r + o)
 		_c[_np] = clear
 		_p[_np + 1] = c + u * (r + h)
@@ -271,7 +426,9 @@ func rect(r: Rect2, col: Color) -> void:
 	_vert(Vector2(r.position.x, r.end.y), col)
 	_quad(k, k + 1, k + 2, k + 3)
 
-func shape(pts: PackedVector2Array, tris: PackedInt32Array, c: Vector2, s: float, angle: float, fill: Color, outline: Variant = null) -> void:
+## A filled polygon, turned and scaled, edged with `outline` (or a thin soft
+## edge of its own colour; none at all when `rim` is false, for shadows).
+func shape(pts: PackedVector2Array, tris: PackedInt32Array, c: Vector2, s: float, angle: float, fill: Color, outline: Variant = null, rim_on: bool = true) -> void:
 	var count: int = pts.size()
 	_room(count * 9 + 8)
 	var cs: float = cos(angle)
@@ -283,8 +440,9 @@ func shape(pts: PackedVector2Array, tris: PackedInt32Array, c: Vector2, s: float
 		_at[i] = c + Vector2(v.x * cs - v.y * sn, v.x * sn + v.y * cs)
 	var rim: Color = outline if outline != null else Color(fill, fill.a * 0.6)
 	var rim_width: float = 2.2 if outline != null else 0.9
-	for i: int in count:
-		line(_at[i], _at[(i + 1) % count], rim, rim_width)
+	if rim_on:
+		for i: int in count:
+			line(_at[i], _at[(i + 1) % count], rim, rim_width)
 	var first: int = _np
 	for i: int in count:
 		_vert(_at[i], fill)

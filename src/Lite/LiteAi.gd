@@ -233,7 +233,7 @@ func travel(s: LiteSim, me: LiteSide, target: Vector2, arm: int) -> float:
 			if r.side == side and not r.city and r.label.distance_to(target) < bd:
 				bd = r.label.distance_to(target)
 				from = r.label
-	return from.distance_to(target) / LiteRules.speed(arm) * (1.2 if arm == LiteArm.DRONE else 1.1)
+	return from.distance_to(target) / LiteRules.mean_speed(arm) * (1.2 if arm == LiteArm.DRONE else 1.1)
 
 func worth(s: LiteSim, b: LiteBuilding, cov: float) -> float:
 	var w: float
@@ -738,7 +738,7 @@ func _option(s: LiteSim, me: LiteSide, b: LiteBuilding) -> Option:
 		o.count = count
 		o.cost = count * LiteRules.cost(arm)
 		o.route = route
-		o.travel = _path_length(from, route, b.pos) / LiteRules.speed(arm) * 1.1
+		o.travel = _path_length(from, route, b.pos) / LiteRules.mean_speed(arm) * 1.1
 		if arm == LiteArm.DRONE:
 			drone = o
 		elif missile == null or o.cost < missile.cost:

@@ -23,51 +23,51 @@ var capital_name: PackedStringArray = PackedStringArray(["", ""])
 ## screen with it.
 var land_rect: Rect2 = Rect2(0, 0, W, H)
 
-var _fx: float = 0.0
-var _bend: float = 0.0
-var _sal_y: float = 0.0
-var _sal_a: float = 0.0
-var _sal_w: float = 0.0
-## Where our peninsula leaves the coast: south of it the frontier keeps east
-## of it, so our south stays a sea coast.
-var _neck: Vector2 = Vector2(-9999, -9999)
-var _c0: Vector2 = Vector2.ZERO
-var _c1: Vector2 = Vector2.ZERO
+## How a map is made. One landmass between seas, in one of a few layouts: a
+## long chain of land, a crescent, two masses joined by a neck, one compact
+## continent, or a chain running corner to corner. Its coast is made ragged
+## by noise, more on some maps than others, with bays bitten out of it and now
+## and then a peninsula. Ours is the near end of it and theirs the far, split
+## by a frontier that runs from coast to coast, turned a different way on each
+## map: winding, jagged or ruled straight like a surveyed line, sometimes with
+## a deep wedge driven into one side or the other, sometimes with a river
+## along part of it. Each country is cut into provinces: the land nearest each
+## of a scatter of seeds, measured through a noise warp, so their borders wind
+## the way real ones do. Islands, enclaves and stray bits of a province are
+## cleaned away, so every country and every province is one piece.
 var _ns: int = 0
-
-var _warp: PackedVector2Array = PackedVector2Array()
-var _bend_grid: PackedVector2Array = PackedVector2Array()
-
-var _poly0: PackedVector2Array = PackedVector2Array()
-var _poly1: PackedVector2Array = PackedVector2Array()
-var _bays_c: PackedVector2Array = PackedVector2Array()
-var _bays_r: PackedVector2Array = PackedVector2Array()
-
-var _row_edges: PackedFloat32Array = PackedFloat32Array()
-var _row_start: PackedInt32Array = PackedInt32Array()
-
-const _FR_LO: int = -64
-const _FR_N: int = 192
-var _fr_rows: PackedFloat64Array = PackedFloat64Array()
-
-var _fr_lo: PackedFloat32Array = PackedFloat32Array()
-var _fr_hi: PackedFloat32Array = PackedFloat32Array()
-
-const _MC: float = 4.0
-const _MW: int = 245
-const _MH: int = 180
-var _mask: PackedByteArray = PackedByteArray()
-
-const _G0: float = -64.0
-const _GC: float = 8.0
-const _GW: int = 140
-const _GH: int = 108
-var _g_start: PackedInt32Array = PackedInt32Array()
-var _g_count: PackedInt32Array = PackedInt32Array()
-var _g_list: PackedInt32Array = PackedInt32Array()
-var _g_seeds: PackedVector2Array = PackedVector2Array()
-var _g_n0: int = 0
-var _g_n1: int = 0
+var _blob_c: PackedVector2Array = PackedVector2Array()
+var _blob_r: PackedVector2Array = PackedVector2Array()
+var _blob_a: PackedFloat32Array = PackedFloat32Array()
+var _cut_c: PackedVector2Array = PackedVector2Array()
+var _cut_r: PackedVector2Array = PackedVector2Array()
+var _coast: FastNoiseLite = null
+var _coast_a: float = 0.45
+var _wobble: FastNoiseLite = null
+var _front_n: FastNoiseLite = null
+## The frontier is laid out across `_axis` (ours is on the side it points
+## away from): at each point `v` along it, it lies `_fx + _bend(v)` along the
+## axis from the middle of the map.
+const MID: Vector2 = Vector2(W * 0.5, H * 0.5)
+enum { WINDING, JAGGED, SURVEYED }
+var _axis: Vector2 = Vector2.RIGHT
+var _style: int = WINDING
+var _knots: PackedVector2Array = PackedVector2Array()
+var _fx: float = 0.0
+var _slope: float = 0.0
+var _sal_v: float = 0.0
+var _sal_a: float = 0.0
+var _sal_w: float = 1.0
+## A river along the frontier: how wide (0 for none), and the stretch of it
+## (in `v`) it runs along, from one coast.
+var _river_w: float = 0.0
+var _river_lo: float = 0.0
+var _river_hi: float = 0.0
+## How much province borders wind, and how many provinces ours has.
+var _warp_a: float = 24.0
+var _provinces: int = 15
+## Land is where `_land` is above this.
+const LAND: float = 0.1
 
 const OUR_NAMES: Array[String] = [
 	"Verbivska", "Lisova", "Zorianska", "Dubivska", "Kalynivska", "Ozerna", "Stepova", "Bilohirska",
@@ -187,81 +187,32 @@ func _build() -> void:
 	var rng:= RandomNumberGenerator.new()
 	rng.seed = seed
 	_ns = rng.randi_range(1, (1 << 20) - 1)
+	_shape(rng)
 
-	_fx = _r(rng, 470, 570)
-	_bend = _r(rng, -120, 130)
-	_sal_y = _r(rng, 160, 580)
-	_sal_a = _r(rng, -125, 125)
-	_sal_w = _r(rng, 55, 130)
-	var cy: float = 362 + _r(rng, -14, 14)
-	var c0x: float = _fx * 0.5 + _r(rng, 0, 30)
-	_c0 = Vector2(c0x, cy + _r(rng, -20, 10))
-	# Ours is wider than it is tall, as most real countries are, with a sea
-	# coast along the south and a peninsula reaching into it.
-	var west0: float = _c0.x - _r(rng, 14, 30)
-	var east0: float = _fx - _c0.x + _r(rng, 140, 190)
-	var north0: float = _r(rng, 165, 215)
-	var south0: float = _r(rng, 165, 205)
-	var n0v: int = 15 + rng.randi_range(0, 5)
-	var pen_a: float = PI / 2 + _r(rng, -0.45, 0.3)
-	_poly0 = _polygon(rng, _c0, west0, east0, north0, south0, n0v)
-	var pen: Array = _peninsula(rng, _poly0, _c0, pen_a)
-	_poly0 = pen[0]
-	_neck = pen[1]
-	_c1 = Vector2(_fx + (W - _fx) * 0.42, cy + _r(rng, -22, 8))
-	var west1: float = _c1.x - _fx + _r(rng, 150, 210)
-	var east1: float = W - 34 - _c1.x - _r(rng, 0, 30)
-	var north1: float = _c1.y - _r(rng, 22, 70)
-	var south1: float = H - _c1.y - _r(rng, 22, 80)
-	var n1v: int = 14 + rng.randi_range(0, 5)
-	_poly1 = _polygon(rng, _c1, west1, east1, north1, south1, n1v)
-
-	# The sea on either side of the peninsula's neck: a wide gulf to the
-	# west and a smaller one to the east.
-	var w_r:= Vector2(_r(rng, 70, 105), _r(rng, 30, 46))
-	_bays_c.append(_neck + Vector2(-(16 + w_r.x), _r(rng, -6, 10)))
-	_bays_r.append(w_r)
-	var e_r:= Vector2(_r(rng, 42, 64), _r(rng, 24, 36))
-	_bays_c.append(_neck + Vector2(14 + e_r.x, _r(rng, -12, 4)))
-	_bays_r.append(e_r)
-	var nb: int = rng.randi_range(0, 2)
-	for i: int in nb:
-		var own: PackedVector2Array = _poly0 if i % 2 == 0 else _poly1
-		var c: Vector2 = own[rng.randi_range(0, own.size() - 1)]
-
-		if absf(c.x - _fx) < 140 or _inside(_poly1 if i % 2 == 0 else _poly0, c):
-			continue
-		_bays_c.append(c)
-		_bays_r.append(Vector2(_r(rng, 35, 70), _r(rng, 30, 60)))
-	_prepare_side_of()
-
-	_build_grids()
-
+	var land:= PackedByteArray()
+	land.resize(W * H)
+	for y: int in H:
+		var i: int = y * W
+		for x: int in W:
+			land[i] = 1 if _land(x + 0.5, y + 0.5) > LAND else 0
+			i += 1
+	_fill_lakes(land)
+	var across:= PackedFloat32Array()
+	across.resize(W * H)
+	_place_frontier(rng, land, across)
 	var side:= PackedInt32Array()
 	side.resize(W * H)
-	var warp: PackedVector2Array = _warp
-	var mask: PackedByteArray = _mask
-	for y: int in H:
-		var gi: int = y * (W + 1)
-		var ui: int = y * W
-		for x: int in W:
-
-			var w: Vector2 = warp[gi].lerp(warp[gi + 1], 0.5).lerp(warp[gi + W + 1].lerp(warp[gi + W + 2], 0.5), 0.5)
-
-			var mx: int = floori(w.x / _MC)
-			var my: int = floori(w.y / _MC)
-			var st: int = mask[my * _MW + mx] if mx >= 0 and mx < _MW and my >= 0 and my < _MH else 26
-			if st == 1:
-				side[ui] = 0
-			elif st == 4:
-				side[ui] = 1
-			elif st == 0:
-				side[ui] = -1
-			else:
-				side[ui] = _side_of(w.x, w.y)
-			gi += 1
-			ui += 1
+	for i: int in W * H:
+		side[i] = -1 if land[i] == 0 else (0 if across[i] < _fx else 1)
+	# The river: water along its stretch of the frontier.
+	if _river_w > 0.0:
+		for y: int in H:
+			for x: int in W:
+				var i: int = y * W + x
+				if side[i] >= 0 and _river(x + 0.5, y + 0.5):
+					side[i] = -1
 	side = _keep_mainland(side)
+	_one_piece(side)
 
 	var to_enemy: Array[PackedFloat32Array] = [
 		_chamfer(side, func(v: int) -> bool: return v == 1),
@@ -271,26 +222,35 @@ func _build() -> void:
 	var room: PackedFloat32Array = PackedFloat32Array([0.0, 0.0])
 	var te0: PackedFloat32Array = to_enemy[0]
 	var te1: PackedFloat32Array = to_enemy[1]
-	for i: int in W * H:
-		var sv: int = side[i]
-		if sv >= 0 and to_sea[i] >= 32:
-			room[sv] = maxf(room[sv], te0[i] if sv == 0 else te1[i])
+	var box_lo: Array[Vector2] = [Vector2(W, H), Vector2(W, H)]
+	var box_hi: Array[Vector2] = [Vector2.ZERO, Vector2.ZERO]
+	for y: int in H:
+		for x: int in W:
+			var i: int = y * W + x
+			var sv: int = side[i]
+			if sv < 0:
+				continue
+			box_lo[sv] = box_lo[sv].min(Vector2(x, y))
+			box_hi[sv] = box_hi[sv].max(Vector2(x, y))
+			if to_sea[i] >= 32:
+				room[sv] = maxf(room[sv], te0[i] if sv == 0 else te1[i])
+	# Both capitals sit as far from the frontier as each other, somewhere
+	# different on every map.
 	var reach: float = minf(minf(room[0], room[1]), 280.0) * 0.85
-	var want0:= _c0 + Vector2(_r(rng, -10, 70), -_r(rng, 55, 110))
+	var want0:= Vector2(lerpf(box_lo[0].x, box_hi[0].x, _r(rng, 0.2, 0.55)), lerpf(box_lo[0].y, box_hi[0].y, _r(rng, 0.25, 0.75)))
+	var want1:= Vector2(lerpf(box_lo[1].x, box_hi[1].x, _r(rng, 0.45, 0.8)), lerpf(box_lo[1].y, box_hi[1].y, _r(rng, 0.25, 0.75)))
 	capital[0] = _place(side, 0, te0, to_sea, reach, want0)
-	var want1x: float = _c1.x + _r(rng, 50, 120)
-	var want1:= Vector2(want1x, _c1.y + _r(rng, -110, 30))
 	capital[1] = _place(side, 1, te1, to_sea, reach, want1)
 	var area: PackedInt32Array = PackedInt32Array([0, 0])
 	for v: int in side:
 		if v >= 0:
 			area[v] += 1
-	var per: float = area[0] / 15.0
+	var per: float = area[0] / float(_provinces)
 	var seeds0: Array[Vector2] = [capital[0]]
 	var seeds1: Array[Vector2] = [capital[1]]
 	var seeds: Array[Array] = [seeds0, seeds1]
 	for s: int in 2:
-		var want: int = 15 if s == 0 else clampi(roundi(area[1] / per), 8, 22)
+		var want: int = _provinces if s == 0 else clampi(roundi(area[1] / per), 8, 22)
 		var dmin: float = sqrt(per) * 0.82
 		var mine: Array[Vector2] = seeds0 if s == 0 else seeds1
 		var tries: int = 0
@@ -304,7 +264,7 @@ func _build() -> void:
 				continue
 			var p:= Vector2(x, y)
 			var ok: bool = true
-			# Regions differ in size, as real provinces do: big ones in some
+			# Provinces differ in size, as real ones do: big ones in some
 			# parts of the country, small ones in others.
 			var near: float = dmin * clampf(1.0 + 0.9 * _fbm(x * 0.0055, y * 0.0055, _ns + 41), 0.68, 1.4)
 			for list: Array in seeds:
@@ -317,14 +277,23 @@ func _build() -> void:
 	var n0: int = seeds0.size()
 	var n1: int = seeds1.size()
 	var city: PackedInt32Array = PackedInt32Array([n0 + n1, n0 + n1 + 1])
-	var warped:= PackedVector2Array()
+	var all:= PackedVector2Array()
 	for list: Array in seeds:
 		for p: Vector2 in list:
-			warped.append(_region_pos(p.x, p.y, _warp_point(p.x, p.y)))
-	var cap_w0: Vector2 = warped[0]
-	var cap_w1: Vector2 = warped[n0]
+			all.append(p)
 
-	_raster(side, warped, n0, n1, city, cap_w0, cap_w1)
+	# Provinces, one map unit at a time, then cleaned up.
+	var reg:= PackedInt32Array()
+	reg.resize(W * H)
+	for y: int in H:
+		var i: int = y * W
+		for x: int in W:
+			var sv: int = side[i]
+			reg[i] = -1 if sv < 0 else _nearest(all, x + 0.5, y + 0.5, 0 if sv == 0 else n0, n0 if sv == 0 else n0 + n1)
+			i += 1
+	_merge_strays(reg)
+	_merge_strays(reg)
+	_fine_ids(reg, all, n0, n1, city)
 	var cell_l:= PackedByteArray()
 	cell_l.resize(W * H)
 	for y: int in H:
@@ -444,677 +413,402 @@ static func _shuffled(src: Array[String], rng: RandomNumberGenerator) -> Array[S
 		i -= 1
 	return a
 
-func _build_grids() -> void:
-	const GW: int = W + 1
-	const GH: int = H + 1
-
-	var pairs: Array[Array] = [
-		[0.0045, _ns + 1, _ns + 2, 40.0],
-		[0.01, _ns + 8, _ns + 9, 24.0],
-		[0.024, _ns + 3, _ns + 4, 13.0],
-		[0.06, _ns + 10, _ns + 11, 4.5],
-		[0.011, _ns + 5, _ns + 6, 22.0],
-	]
-	var av:= PackedVector2Array()
-	var dv:= PackedVector2Array()
-
-	var rof:= PackedInt32Array()
-	rof.resize(15 * GH)
-	var rt:= PackedFloat64Array()
-	rt.resize(15 * GH)
-	var xi:= PackedInt32Array()
-	xi.resize(GW)
-	var sx:= PackedFloat64Array()
-	sx.resize(GW)
-	var yi:= PackedInt32Array()
-	yi.resize(GH)
-	for p: int in 5:
-		var k: float = pairs[p][0]
-		var s1: int = pairs[p][1]
-		var s2: int = pairs[p][2]
-		var weight: float = pairs[p][3]
-
-		var amp: float = 0.5
-		var norm: float = 0.5 + 0.25 + 0.125
-		var f: float = 1.0
-		for o: int in 3:
-			var term: int = p * 3 + o
-			var so1: int = s1 + o * 101
-			var so2: int = s2 + o * 101
-			var wgt: float = weight * amp / norm
-			for x: int in GW:
-				var u: float = (x * k) * f
-				var i: int = floori(u)
-				var t: float = u - i
-				xi[x] = i
-				sx[x] = t * t * (3 - 2 * t)
-			for y: int in GH:
-				var u: float = (y * k) * f
-				var i: int = floori(u)
-				var t: float = u - i
-				yi[y] = i
-				rt[term * GH + y] = t * t * (3 - 2 * t)
-			var x0: int = xi[0]
-			var y0: int = yi[0]
-			var nx: int = xi[GW - 1] - x0 + 2
-			var ny: int = yi[GH - 1] - y0 + 2
-			var base: int = av.size()
-			for y: int in GH:
-				rof[term * GH + y] = base + (yi[y] - y0) * GW
-			var h1:= PackedFloat64Array()
-			h1.resize(nx * ny)
-			var h2:= PackedFloat64Array()
-			h2.resize(nx * ny)
-			for j: int in ny:
-				for i: int in nx:
-					h1[j * nx + i] = _hash(x0 + i, y0 + j, so1)
-					h2[j * nx + i] = _hash(x0 + i, y0 + j, so2)
-			av.resize(base + ny * GW)
-			dv.resize(base + ny * GW)
-			for j: int in ny:
-				for x: int in GW:
-					var b: int = j * nx + xi[x] - x0
-					var t: float = sx[x]
-					var a1: float = h1[b] + (h1[b + 1] - h1[b]) * t
-					var a2: float = h2[b] + (h2[b + 1] - h2[b]) * t
-					av[base + j * GW + x] = Vector2(a1, a2) * wgt
-			for i: int in (ny - 1) * GW:
-				dv[base + i] = av[base + i + GW] - av[base + i]
-			amp *= 0.5
-			f *= 2.03
-	var warp:= PackedVector2Array()
-	warp.resize(GW * GH)
-	var bend:= PackedVector2Array()
-	bend.resize(GW * GH)
-	for y: int in GH:
-		var o0: int = rof[0 * GH + y]
-		var t0: float = rt[0 * GH + y]
-		var o1: int = rof[1 * GH + y]
-		var t1: float = rt[1 * GH + y]
-		var o2: int = rof[2 * GH + y]
-		var t2: float = rt[2 * GH + y]
-		var o3: int = rof[3 * GH + y]
-		var t3: float = rt[3 * GH + y]
-		var o4: int = rof[4 * GH + y]
-		var t4: float = rt[4 * GH + y]
-		var o5: int = rof[5 * GH + y]
-		var t5: float = rt[5 * GH + y]
-		var o6: int = rof[6 * GH + y]
-		var t6: float = rt[6 * GH + y]
-		var o7: int = rof[7 * GH + y]
-		var t7: float = rt[7 * GH + y]
-		var o8: int = rof[8 * GH + y]
-		var t8: float = rt[8 * GH + y]
-		var o9: int = rof[9 * GH + y]
-		var t9: float = rt[9 * GH + y]
-		var o10: int = rof[10 * GH + y]
-		var t10: float = rt[10 * GH + y]
-		var o11: int = rof[11 * GH + y]
-		var t11: float = rt[11 * GH + y]
-		var o12: int = rof[12 * GH + y]
-		var t12: float = rt[12 * GH + y]
-		var o13: int = rof[13 * GH + y]
-		var t13: float = rt[13 * GH + y]
-		var o14: int = rof[14 * GH + y]
-		var t14: float = rt[14 * GH + y]
-		var gi: int = y * GW
-		for x: int in GW:
-			warp[gi + x] = (Vector2(x, y)
-				+av[o0 + x] + dv[o0 + x] * t0
-				+av[o1 + x] + dv[o1 + x] * t1
-				+av[o2 + x] + dv[o2 + x] * t2
-				+av[o3 + x] + dv[o3 + x] * t3
-				+av[o4 + x] + dv[o4 + x] * t4
-				+av[o5 + x] + dv[o5 + x] * t5
-				+av[o6 + x] + dv[o6 + x] * t6
-				+av[o7 + x] + dv[o7 + x] * t7
-				+av[o8 + x] + dv[o8 + x] * t8
-				+av[o9 + x] + dv[o9 + x] * t9
-				+av[o10 + x] + dv[o10 + x] * t10
-				+av[o11 + x] + dv[o11 + x] * t11)
-			bend[gi + x] = (av[o12 + x] + dv[o12 + x] * t12
-				+av[o13 + x] + dv[o13 + x] * t13
-				+av[o14 + x] + dv[o14 + x] * t14)
-	_warp = warp
-	_bend_grid = bend
-
-func _warp_point(x: float, y: float) -> Vector2:
-	return _lerp(_warp, x, y)
-
-static func _lerp(grid: PackedVector2Array, x: float, y: float) -> Vector2:
-	x = clampf(x, 0, W - 0.001)
-	y = clampf(y, 0, H - 0.001)
-	var xi: int = int(x)
-	var yi: int = int(y)
-	var i: int = yi * (W + 1) + xi
-	var fx: float = x - xi
-	var fy: float = y - yi
-	var top: Vector2 = grid[i].lerp(grid[i + 1], fx)
-	var bottom: Vector2 = grid[i + W + 1].lerp(grid[i + W + 2], fx)
-	return top.lerp(bottom, fy)
-
-func _region_pos(x: float, y: float, w: Vector2) -> Vector2:
-	return w + _lerp(_bend_grid, x, y)
-
-func _prepare_side_of() -> void:
-	_row_edges = PackedFloat32Array()
-	_row_start = PackedInt32Array()
-	_row_start.resize(2 * (H + 1))
-	var ne: int = 0
-	for pi: int in 2:
-		var poly: PackedVector2Array = _poly0 if pi == 0 else _poly1
-		var n: int = poly.size()
-		for row: int in H:
-			_row_start[pi * (H + 1) + row] = ne
-			var j: int = n - 1
-			for i: int in n:
-				var a: Vector2 = poly[i]
-				var b: Vector2 = poly[j]
-
-				if minf(a.y, b.y) < row + 1 and maxf(a.y, b.y) > row:
-					_row_edges.append(a.x)
-					_row_edges.append(a.y)
-					_row_edges.append(b.x)
-					_row_edges.append(b.y)
-					ne += 1
-				j = i
-		_row_start[pi * (H + 1) + H] = ne
-
-	_mask = PackedByteArray()
-	_mask.resize(_MW * _MH)
-	for pi: int in 2:
-		var poly: PackedVector2Array = _poly0 if pi == 0 else _poly1
-		var near:= PackedByteArray()
-		near.resize(_MW * _MH)
-		var j: int = poly.size() - 1
-		for i: int in poly.size():
-			var a: Vector2 = poly[i]
-			var b: Vector2 = poly[j]
-
-			var steps: int = ceili(a.distance_to(b)) + 1
-			for t: int in steps + 1:
-				var p: Vector2 = a.lerp(b, float(t) / steps)
-				var cx: int = floori(p.x / _MC)
-				var cy: int = floori(p.y / _MC)
-				for yy: int in range(maxi(cy - 1, 0), mini(cy + 2, _MH)):
-					for xx: int in range(maxi(cx - 1, 0), mini(cx + 2, _MW)):
-						near[yy * _MW + xx] = 1
-			j = i
-		for cy: int in _MH:
-			for cx: int in _MW:
-				var k: int = cy * _MW + cx
-				var st: int = 2
-				if near[k] == 0:
-					st = 1 if _inside_rows(pi, (cx + 0.5) * _MC, (cy + 0.5) * _MC) else 0
-				_mask[k] |= st << (pi * 2)
-	for cy: int in _MH:
-		for cx: int in _MW:
-			var lo:= Vector2(cx * _MC, cy * _MC)
-			var hi:= lo + Vector2(_MC, _MC)
-			for b: int in _bays_c.size():
-				var c: Vector2 = _bays_c[b]
-				var r: Vector2 = _bays_r[b]
-
-				var qx: float = (clampf(c.x, lo.x, hi.x) - c.x) / r.x
-				var qy: float = (clampf(c.y, lo.y, hi.y) - c.y) / r.y
-				if qx * qx + qy * qy < 1.01:
-					_mask[cy * _MW + cx] |= 16
-	_fr_rows = PackedFloat64Array()
-	_fr_rows.resize(3 * _FR_N)
-	var f: float = 1.0
-	for o: int in 3:
-		var u: float = 5.3 * f
-		var xi: int = floori(u)
-		var t: float = u - xi
-		t = t * t * (3 - 2 * t)
-		var s: int = _ns + 7 + o * 101
-		for j: int in _FR_N:
-			var a: float = _hash(xi, _FR_LO + j, s)
-			_fr_rows[o * _FR_N + j] = a + (_hash(xi + 1, _FR_LO + j, s) - a) * t
-		f *= 2.03
-
-	_fr_lo = PackedFloat32Array()
-	_fr_lo.resize(H)
-	_fr_hi = PackedFloat32Array()
-	_fr_hi.resize(H)
-	var prev: float = _frontier(0.0)
-	for row: int in H:
-		var next: float = _frontier(row + 1.0)
-		_fr_lo[row] = minf(prev, next) - 4.0
-		_fr_hi[row] = maxf(prev, next) + 4.0
-		prev = next
-
-func _inside_rows(pi: int, wx: float, wy: float) -> bool:
-	var inside: bool = false
-	var row: int = floori(wy)
-	if row < 0 or row >= H:
-		return false
-	var e: PackedFloat32Array = _row_edges
-	var k: int = _row_start[pi * (H + 1) + row]
-	var k1: int = _row_start[pi * (H + 1) + row + 1]
-	while k < k1:
-		var o: int = k * 4
-		var ay: float = e[o + 1]
-		var by: float = e[o + 3]
-		if (ay > wy) != (by > wy) and wx < (e[o + 2] - e[o]) * (wy - ay) / (by - ay) + e[o]:
-			inside = not inside
-		k += 1
-	return inside
-
-func _side_of(wx: float, wy: float) -> int:
-
-	var mx: int = floori(wx / _MC)
-	var my: int = floori(wy / _MC)
-	var st: int = 26
-	if mx >= 0 and mx < _MW and my >= 0 and my < _MH:
-		st = _mask[my * _MW + mx]
-	if (st & 16) != 0:
-		for b: int in _bays_c.size():
-			var c: Vector2 = _bays_c[b]
-			var r: Vector2 = _bays_r[b]
-			var qx: float = (wx - c.x) / r.x
-			var qy: float = (wy - c.y) / r.y
-			if qx * qx + qy * qy < 1.0:
-				return -1
-
-	var in0: bool = (st & 3) == 1
-	if (st & 3) == 2:
-		in0 = _inside_rows(0, wx, wy)
-	var in1: bool = ((st >> 2) & 3) == 1
-	if ((st >> 2) & 3) == 2:
-		in1 = _inside_rows(1, wx, wy)
-	if not in0 and not in1:
-		return -1
-	if in0 != in1:
-		return 0 if in0 else 1
-
-	var row: int = floori(wy)
-	if row >= 0 and row < H:
-		if wx < _fr_lo[row]:
-			return 0
-		if wx >= _fr_hi[row]:
-			return 1
-	return 0 if wx < _frontier(wy) else 1
-
-func _frontier(y: float) -> float:
-	var d: float = (y - _sal_y) / _sal_w
-	var x: float = _fx - _bend * (_smooth((y - 160.0) / 420.0) - 0.5) + 78.0 * _frontier_fbm(y) - _sal_a * exp(-d * d)
-	# Along our south coast the frontier keeps east of the peninsula.
-	var keep: float = _smooth((y - (_neck.y - 140.0)) / 90.0)
-	return maxf(x, lerpf(-9999.0, _neck.x + 150.0, keep)) if keep > 0.0 else x
-
-func _frontier_fbm(y: float) -> float:
-	var sum: float = 0.0
-	var amp: float = 0.5
-	var norm: float = 0.0
-	var f: float = 1.0
-	for o: int in 3:
-		var u: float = (y * 0.012) * f
-		var yi: int = floori(u)
-		var j: int = yi - _FR_LO
-		var v: float
-		if j >= 0 and j + 1 < _FR_N:
-			var t: float = u - yi
-			t = t * t * (3 - 2 * t)
-			var a: float = _fr_rows[o * _FR_N + j]
-			v = a + (_fr_rows[o * _FR_N + j + 1] - a) * t
-		else:
-			v = _value(5.3 * f, u, _ns + 7 + o * 101)
-		sum += amp * v
-		norm += amp
-		amp *= 0.5
-		f *= 2.03
-	return sum / norm
-
-func _raster(side: PackedInt32Array, warped: PackedVector2Array, n0: int, n1: int,
-	city: PackedInt32Array, cap_w0: Vector2, cap_w1: Vector2) -> void:
-	const GW: int = W + 1
-	const CITY_R2: float = CITY_R * CITY_R
-	const GCELLS: int = _GW * _GH
-
-	const PAD:= Vector2(0.01, 0.01)
-	var ids_l:= PackedByteArray()
-	ids_l.resize(RW * RH)
-	var warp: PackedVector2Array = _warp
-	var bend: PackedVector2Array = _bend_grid
-	_g_seeds = warped
-	_g_n0 = n0
-	_g_n1 = n1
-	_g_start = PackedInt32Array()
-	_g_start.resize(2 * GCELLS)
-	_g_count = PackedInt32Array()
-	_g_count.resize(2 * GCELLS)
-	_g_count.fill(-1)
-	_g_list = PackedInt32Array()
-	var city0: int = city[0]
-	var city1: int = city[1]
-	var wt: Vector2
-	var wb: Vector2
-	var bt: Vector2
-	var bb: Vector2
-	for uy: int in H:
-		for ux: int in W:
-			var ui: int = uy * W + ux
-			var sc: int = side[ui]
-			var sl: int = side[ui - 1] if ux > 0 else -2
-			var sr: int = side[ui + 1] if ux + 1 < W else -2
-			var su: int = side[ui - W] if uy > 0 else -2
-			var sd: int = side[ui + W] if uy + 1 < H else -2
-			var p0: int = uy * S * RW + ux * S
-			if sc < 0 and sl < 0 and sr < 0 and su < 0 and sd < 0:
-
-				ids_l[p0] = NONE
-				ids_l[p0 + 1] = NONE
-				ids_l[p0 + RW] = NONE
-				ids_l[p0 + RW + 1] = NONE
-				continue
-			var gi: int = uy * GW + ux
-			var w00: Vector2 = warp[gi]
-			var w10: Vector2 = warp[gi + 1]
-			var w01: Vector2 = warp[gi + GW]
-			var w11: Vector2 = warp[gi + GW + 1]
-			var b00: Vector2 = bend[gi]
-			var b10: Vector2 = bend[gi + 1]
-			var b01: Vector2 = bend[gi + GW]
-			var b11: Vector2 = bend[gi + GW + 1]
-
-			var us: int = _box_side(w00.min(w10).min(w01.min(w11)) - PAD, w00.max(w10).max(w01.max(w11)) + PAD)
-			if us == -1 or (us >= 0 and sc != us and sl != us and sr != us and su != us and sd != us):
-				ids_l[p0] = NONE
-				ids_l[p0 + 1] = NONE
-				ids_l[p0 + RW] = NONE
-				ids_l[p0 + RW + 1] = NONE
-				continue
-
-			var in_city: int = 0
-			if us >= 0:
-				var q00: Vector2 = w00 + b00
-				var q10: Vector2 = w10 + b10
-				var q01: Vector2 = w01 + b01
-				var q11: Vector2 = w11 + b11
-				var qlo: Vector2 = q00.min(q10).min(q01.min(q11)) - PAD
-				var qhi: Vector2 = q00.max(q10).max(q01.max(q11)) + PAD
-				var cap: Vector2 = cap_w0 if us == 0 else cap_w1
-				if cap.clamp(qlo, qhi).distance_squared_to(cap) >= CITY_R2:
-					in_city = 1
-					var gx0: int = floori((qlo.x - _G0) / _GC)
-					var gy0: int = floori((qlo.y - _G0) / _GC)
-					var gx1: int = floori((qhi.x - _G0) / _GC)
-					var gy1: int = floori((qhi.y - _G0) / _GC)
-					if gx0 >= 0 and gy0 >= 0 and gx1 < _GW and gy1 < _GH:
-						var gc: int = us * GCELLS + gy0 * _GW + gx0
-						var only: int = _cell_only(gc)
-						if only >= 0 and gx1 != gx0 and _cell_only(gc + 1) != only:
-							only = -1
-						if only >= 0 and gy1 != gy0 and _cell_only(gc + _GW) != only:
-							only = -1
-						if only >= 0 and gx1 != gx0 and gy1 != gy0 and _cell_only(gc + _GW + 1) != only:
-							only = -1
-						if only >= 0:
-
-							ids_l[p0] = only
-							ids_l[p0 + 1] = only
-							ids_l[p0 + RW] = only
-							ids_l[p0 + RW + 1] = only
-							continue
-				else:
-					var far:= Vector2(maxf(absf(qlo.x - cap.x), absf(qhi.x - cap.x)), maxf(absf(qlo.y - cap.y), absf(qhi.y - cap.y)))
-					if far.length_squared() < CITY_R2:
-						var cid: int = city0 if us == 0 else city1
-						ids_l[p0] = cid
-						ids_l[p0 + 1] = cid
-						ids_l[p0 + RW] = cid
-						ids_l[p0 + RW + 1] = cid
-						continue
-			for k: int in 4:
-				var dx: int = k >> 1
-				var dy: int = k & 1
-				var fy: float = 0.25 + 0.5 * dy
-				if dy == 0:
-
-					var fx: float = 0.25 + 0.5 * dx
-					wt = w00.lerp(w10, fx)
-					wb = w01.lerp(w11, fx)
-					bt = b00.lerp(b10, fx)
-					bb = b01.lerp(b11, fx)
-				var pi: int = p0 + dy * RW + dx
-				var w: Vector2 = wt.lerp(wb, fy)
-				var s: int = us
-				if s == -3:
-					s = _side_of(w.x, w.y)
-
-					if s < 0 or (sc != s and sl != s and sr != s and su != s and sd != s):
-						ids_l[pi] = NONE
-						continue
-				var q: Vector2 = w + bt.lerp(bb, fy)
-				if in_city != 1 and q.distance_squared_to(cap_w0 if s == 0 else cap_w1) < CITY_R2:
-					ids_l[pi] = city0 if s == 0 else city1
-					continue
-				var from: int = 0 if s == 0 else n0
-				var bi: int = from
-				var bd: float = 3.4028235e+38
-				var gx: int = floori((q.x - _G0) / _GC)
-				var gy: int = floori((q.y - _G0) / _GC)
-				if gx >= 0 and gx < _GW and gy >= 0 and gy < _GH:
-					var gc: int = s * GCELLS + gy * _GW + gx
-					if _g_count[gc] < 0:
-						_fill_cell(gc)
-					var t: int = _g_start[gc]
-					var t1: int = t + _g_count[gc]
-					while t < t1:
-						var i: int = _g_list[t]
-						var d: float = q.distance_squared_to(warped[i])
-						if d < bd:
-							bd = d
-							bi = i
-						t += 1
-				else:
-					var to: int = n0 if s == 0 else n0 + n1
-					for i: int in range(from, to):
-						var d: float = q.distance_squared_to(warped[i])
-						if d < bd:
-							bd = d
-							bi = i
-				ids_l[pi] = bi
-	ids = ids_l
-
-func _box_side(lo: Vector2, hi: Vector2) -> int:
-	var mx0: int = floori(lo.x / _MC)
-	var my0: int = floori(lo.y / _MC)
-	var mx1: int = floori(hi.x / _MC)
-	var my1: int = floori(hi.y / _MC)
-	if mx0 < 0 or my0 < 0 or mx1 >= _MW or my1 >= _MH or mx1 - mx0 > 1 or my1 - my0 > 1:
-		return -3
-	var st: int = _mask[my0 * _MW + mx0]
-
-	if (st & 10) != 0:
-		return -3
-	if _mask[my0 * _MW + mx1] != st or _mask[my1 * _MW + mx0] != st or _mask[my1 * _MW + mx1] != st:
-		return -3
-	if (st & 16) != 0:
-		for b: int in _bays_c.size():
-			var c: Vector2 = _bays_c[b]
-			var r: Vector2 = _bays_r[b]
-
-			var qx: float = (clampf(c.x, lo.x, hi.x) - c.x) / r.x
-			var qy: float = (clampf(c.y, lo.y, hi.y) - c.y) / r.y
-			if qx * qx + qy * qy < 1.0:
-				return -3
-	var in0: bool = (st & 3) == 1
-	var in1: bool = ((st >> 2) & 3) == 1
-	if in0 != in1:
-		return 0 if in0 else 1
-	if not in0:
-		return -1
-	var r0: int = floori(lo.y)
-	var r1: int = floori(hi.y)
-	if r0 < 0 or r1 >= H:
-		return -3
-	var flo: float = _fr_lo[r0]
-	var fhi: float = _fr_hi[r0]
-	for row: int in range(r0 + 1, r1 + 1):
-		flo = minf(flo, _fr_lo[row])
-		fhi = maxf(fhi, _fr_hi[row])
-	if hi.x < flo:
-		return 0
-	if lo.x >= fhi:
-		return 1
-	return -3
-
-func _cell_only(gc: int) -> int:
-	if _g_count[gc] < 0:
-		_fill_cell(gc)
-	return _g_list[_g_start[gc]] if _g_count[gc] == 1 else -1
-
-func _fill_cell(gc: int) -> void:
-	const GCELLS: int = _GW * _GH
-	var s: int = gc / GCELLS
-	var gy: int = (gc % GCELLS) / _GW
-	var gx: int = gc % _GW
-	var from: int = 0 if s == 0 else _g_n0
-	var to: int = _g_n0 if s == 0 else _g_n0 + _g_n1
-	var x0: float = _G0 + gx * _GC
-	var y0: float = _G0 + gy * _GC
-	var x1: float = x0 + _GC
-	var y1: float = y0 + _GC
-	var mid:= Vector2(x0 + _GC * 0.5, y0 + _GC * 0.5)
-	var far_min: float = INF
-	var ref: int = from
-	var ref_d: float = INF
-	for i: int in range(from, to):
-		var p: Vector2 = _g_seeds[i]
-		var fx: float = maxf(absf(p.x - x0), absf(p.x - x1))
-		var fy: float = maxf(absf(p.y - y0), absf(p.y - y1))
-		far_min = minf(far_min, fx * fx + fy * fy)
-		var dm: float = p.distance_squared_to(mid)
-		if dm < ref_d:
-			ref_d = dm
-			ref = i
-
-	var limit: float = far_min * 1.0001 + 0.01
-	var r: Vector2 = _g_seeds[ref]
-	var c00:= Vector2(x0, y0)
-	var c10:= Vector2(x1, y0)
-	var c01:= Vector2(x0, y1)
-	var c11:= Vector2(x1, y1)
-	_g_start[gc] = _g_list.size()
+## The landmass, the bays cut into it, and the noise for its coast,
+## the frontier and province borders.
+func _shape(rng: RandomNumberGenerator) -> void:
+	_coast = FastNoiseLite.new()
+	_coast.seed = _ns
+	_coast.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_coast.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_coast.fractal_octaves = 5
+	_coast.frequency = _r(rng, 0.004, 0.0075)
+	_coast_a = _r(rng, 0.3, 0.55)
+	_wobble = FastNoiseLite.new()
+	_wobble.seed = _ns + 7
+	_wobble.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_wobble.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_wobble.fractal_octaves = 3
+	_wobble.frequency = _r(rng, 0.008, 0.014)
+	_warp_a = _r(rng, 10.0, 34.0)
+	_provinces = rng.randi_range(12, 18)
+	_front_n = FastNoiseLite.new()
+	_front_n.seed = _ns + 13
+	_front_n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	_front_n.fractal_type = FastNoiseLite.FRACTAL_FBM
+	_front_n.fractal_octaves = 4
+	_front_n.frequency = 0.0055
 	var n: int = 0
-	for i: int in range(from, to):
-		var p: Vector2 = _g_seeds[i]
-		var dx: float = maxf(0.0, maxf(x0 - p.x, p.x - x1))
-		var dy: float = maxf(0.0, maxf(y0 - p.y, p.y - y1))
-		if dx * dx + dy * dy > limit:
-			continue
-		if i != ref and p.distance_squared_to(c00) - r.distance_squared_to(c00) > 0.05 and p.distance_squared_to(c10) - r.distance_squared_to(c10) > 0.05 and p.distance_squared_to(c01) - r.distance_squared_to(c01) > 0.05 and p.distance_squared_to(c11) - r.distance_squared_to(c11) > 0.05:
-			continue
-		_g_list.append(i)
-		n += 1
-	_g_count[gc] = n
+	var turn: float = 0.0
+	match rng.randi_range(0, 4):
+		0:
+			# A chain of land strung out west to east, leaning a little.
+			n = rng.randi_range(4, 5)
+			var x0: float = _r(rng, 160, 220)
+			var x1: float = W - _r(rng, 160, 220)
+			var yc: float = H * 0.5 + _r(rng, -30, 30)
+			var tilt: float = _r(rng, -0.22, 0.22)
+			for k: int in n:
+				var x: float = lerpf(x0, x1, float(k) / (n - 1)) + _r(rng, -35, 35)
+				_oval(Vector2(x, yc + (x - W * 0.5) * tilt + _r(rng, -60, 60)), Vector2(_r(rng, 120, 180), _r(rng, 160, 260)), _r(rng, -0.6, 0.6))
+			turn = _r(rng, -0.35, 0.35)
+		1:
+			# A crescent, bowed up or down.
+			n = 5
+			var bow: float = 1.0 if rng.randf() < 0.5 else -1.0
+			var c:= Vector2(W * 0.5, H * 0.5 + bow * _r(rng, 380, 480))
+			var rad: float = c.distance_to(Vector2(W * 0.5, H * 0.5)) + _r(rng, -20, 20)
+			for k: int in n:
+				var a: float = (-PI * 0.5 * bow) + lerpf(-0.8, 0.8, float(k) / (n - 1)) * bow + _r(rng, -0.06, 0.06)
+				var at: Vector2 = c + Vector2.from_angle(a) * rad
+				_oval(at.clamp(Vector2(150, 140), Vector2(W - 150, H - 140)), Vector2(_r(rng, 115, 160), _r(rng, 120, 175)), a + PI * 0.5)
+			turn = _r(rng, -0.25, 0.25)
+		2:
+			# Two masses joined by a neck of land, the frontier near it.
+			n = 3
+			_oval(Vector2(_r(rng, 230, 290), H * 0.5 + _r(rng, -60, 60)), Vector2(_r(rng, 170, 210), _r(rng, 210, 270)), _r(rng, -0.5, 0.5))
+			_oval(Vector2(W - _r(rng, 230, 290), H * 0.5 + _r(rng, -60, 60)), Vector2(_r(rng, 170, 210), _r(rng, 210, 270)), _r(rng, -0.5, 0.5))
+			_oval((_blob_c[0] + _blob_c[1]) * 0.5 + Vector2(0, _r(rng, -50, 50)), Vector2(_r(rng, 120, 160), _r(rng, 55, 85)), _r(rng, -0.3, 0.3))
+			turn = _r(rng, -0.15, 0.15)
+		3:
+			# One compact continent.
+			n = 3
+			for k: int in n:
+				var a: float = TAU * k / n + rng.randf()
+				_oval(MID + Vector2.from_angle(a) * _r(rng, 70, 150) * Vector2(1.5, 1.0), Vector2(_r(rng, 200, 260), _r(rng, 180, 240)), rng.randf() * PI)
+			turn = _r(rng, -0.6, 0.6)
+		_:
+			# A chain from one corner towards the other.
+			n = rng.randi_range(4, 5)
+			var tilt: float = _r(rng, 0.42, 0.62) * (1.0 if rng.randf() < 0.5 else -1.0)
+			for k: int in n:
+				var x: float = lerpf(190, W - 190, float(k) / (n - 1)) + _r(rng, -25, 25)
+				var y: float = clampf(H * 0.5 + (x - W * 0.5) * tilt, 170, H - 170) + _r(rng, -40, 40)
+				_oval(Vector2(x, y), Vector2(_r(rng, 120, 170), _r(rng, 150, 220)), atan(tilt) + _r(rng, -0.4, 0.4))
+			turn = atan(tilt) * 0.8
+	_axis = Vector2.from_angle(turn)
+	# Now and then a long peninsula reaching out to sea.
+	for k: int in rng.randi_range(0, 2):
+		var b: int = rng.randi_range(0, n - 1)
+		var d:= Vector2.from_angle(rng.randf() * TAU)
+		var reach: float = maxf(_blob_r[b].x, _blob_r[b].y) * 0.8
+		var length: float = _r(rng, 55, 95)
+		_blob_c.append(_blob_c[b] + d * (reach + length * 0.45))
+		_blob_r.append(Vector2(length, _r(rng, 30, 46)))
+		_blob_a.append(d.angle())
+	# Bays bitten out of the coast.
+	var bays: int = rng.randi_range(2, 4)
+	for k: int in 40:
+		if _cut_c.size() >= bays:
+			break
+		var b: int = rng.randi_range(0, n - 1)
+		var d:= Vector2.from_angle(rng.randf() * TAU)
+		var c: Vector2 = _blob_c[b] + d * maxf(_blob_r[b].x, _blob_r[b].y) * _r(rng, 0.85, 1.05)
+		# Only on the coast: one deep inland would leave a lake.
+		if _ovals(c) < 0.12:
+			_cut_c.append(c)
+			_cut_r.append(Vector2(_r(rng, 35, 80), _r(rng, 25, 55)))
 
-## A country's outline: a squarish base bent by a few long waves, with one
-## or two peninsulas or bulges and a gulf or two cut in, so every map has its
-## own silhouette. The noise warp later makes the edge ragged.
-static func _polygon(rng: RandomNumberGenerator, c: Vector2, west: float, east: float, north: float, south: float, n: int, extra: Array[Vector3] = []) -> PackedVector2Array:
-	var waves: Array[Vector3] = []
-	for h: int in [2, 3, 5]:
-		waves.append(Vector3(h, _r(rng, 0, TAU), _r(rng, 0.05, 0.11) * 3.0 / h))
-	# x: direction, y: width (radians), z: how far out (+) or in (-)
-	var lobes: Array[Vector3] = []
-	for i: int in rng.randi_range(2, 3):
-		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.14, 0.34), _r(rng, 0.18, 0.38)))
-	for i: int in rng.randi_range(1, 2):
-		lobes.append(Vector3(_r(rng, 0, TAU), _r(rng, 0.1, 0.2), -_r(rng, 0.14, 0.26)))
-	lobes.append_array(extra)
-	var m: int = n * 4
-	var poly:= PackedVector2Array()
-	for i: int in m:
-		var a: float = (i + _r(rng, -0.3, 0.3)) / m * TAU
-		var cs: float = cos(a)
-		var sn: float = sin(a)
-		var rx: float = east if cs > 0 else west
-		var ry: float = south if sn > 0 else north
-		var k: float = 1.0 / pow(pow(absf(cs) / rx, 2.6) + pow(absf(sn) / ry, 2.6), 1.0 / 2.6)
-		var f: float = 1.0
-		for wv: Vector3 in waves:
-			f += wv.z * sin(wv.x * a + wv.y)
-		for l: Vector3 in lobes:
-			var d: float = angle_difference(a, l.x) / l.y
-			f += l.z * exp(-d * d)
-		k *= f * _r(rng, 0.975, 1.025)
-		poly.append(c + Vector2(cs, sn) * k)
-	# Where a bulge runs past the frame, pull that side in rather than cut it
-	# flat, so no coast runs straight along the edge of the map.
-	var lo:= Vector2(INF, INF)
-	var hi:= Vector2(-INF, -INF)
-	for p: Vector2 in poly:
-		lo = lo.min(p)
-		hi = hi.max(p)
-	var left: float = minf(1.0, (c.x - 14) / maxf(1.0, c.x - lo.x))
-	var right: float = minf(1.0, (W - 14 - c.x) / maxf(1.0, hi.x - c.x))
-	var up: float = minf(1.0, (c.y - 14) / maxf(1.0, c.y - lo.y))
-	var down: float = minf(1.0, (H - 14 - c.y) / maxf(1.0, hi.y - c.y))
-	for i: int in poly.size():
-		var d: Vector2 = poly[i] - c
-		d.x *= left if d.x < 0 else right
-		d.y *= up if d.y < 0 else down
-		var p: Vector2 = c + d
-		poly[i] = Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14))
-	return poly
+func _oval(c: Vector2, r: Vector2, a: float) -> void:
+	_blob_c.append(c)
+	_blob_r.append(r)
+	_blob_a.append(a)
 
-## A peninsula spliced into the coast at direction `a` from `c`: a narrow
-## neck and a rounded head, the way real ones hang off a coastline. Returns
-## the new outline and the point where the neck leaves the coast.
-static func _peninsula(rng: RandomNumberGenerator, poly: PackedVector2Array, c: Vector2, a: float) -> Array:
-	var best: int = 0
-	var bd: float = INF
-	for i: int in poly.size():
-		var d: float = absf(angle_difference((poly[i] - c).angle(), a))
+## How far inside the ovals a point is: 1 at a centre, 0 on the rim.
+func _ovals(p: Vector2) -> float:
+	var v: float = -1.0
+	for k: int in _blob_c.size():
+		var d: Vector2 = (p - _blob_c[k]).rotated(-_blob_a[k]) / _blob_r[k]
+		v = maxf(v, 1.0 - d.length())
+	return v
+
+## How far inland a point is: above LAND is land.
+func _land(x: float, y: float) -> float:
+	var p:= Vector2(x, y)
+	var v: float = _ovals(p) + _coast_a * _coast.get_noise_2d(x, y)
+	for k: int in _cut_c.size():
+		var l: float = ((p - _cut_c[k]) / _cut_r[k]).length_squared()
+		if l < 1.0:
+			v -= 1.3 * (1.0 - sqrt(l))
+	# Never right up to the edge of the map.
+	var m: float = minf(minf(x, y), minf(W - x, H - y))
+	if m < 46.0:
+		v -= (46.0 - m) / 46.0 * 1.2
+	return v
+
+## Water that does not reach the open sea is filled in: no lakes, which on
+## this map would read as holes.
+static func _fill_lakes(land: PackedByteArray) -> void:
+	var sea:= PackedInt32Array()
+	sea.resize(W * H)
+	for i: int in W * H:
+		sea[i] = 0 if land[i] == 0 else -1
+	var res: Array = _label(sea)
+	var comp: PackedInt32Array = res[0]
+	var open:= {}
+	for x: int in W:
+		open[comp[x]] = true
+		open[comp[(H - 1) * W + x]] = true
+	for y: int in H:
+		open[comp[y * W]] = true
+		open[comp[y * W + W - 1]] = true
+	for i: int in W * H:
+		if comp[i] >= 0 and not open.has(comp[i]):
+			land[i] = 1
+
+## How far the frontier is pushed along the axis at `v` across it, besides
+## `_fx`: the way it leans, its wedge, and its winding, jagged or ruled shape.
+func _bend(v: float) -> float:
+	var d: float = (v - _sal_v) / _sal_w
+	var g: float = _slope * v + _sal_a * exp(-d * d)
+	match _style:
+		WINDING:
+			g += 80.0 * _front_n.get_noise_1d(v) + 12.0 * _front_n.get_noise_1d(v * 4.0 + 1000.0)
+		JAGGED:
+			g += 50.0 * _front_n.get_noise_1d(v) + 26.0 * _front_n.get_noise_1d(v * 5.0 + 1000.0) + 9.0 * _front_n.get_noise_1d(v * 16.0 + 3000.0)
+		_:
+			# Straight runs between corners, the way borders are drawn with a ruler.
+			var k: int = 0
+			while k < _knots.size() - 2 and v > _knots[k + 1].x:
+				k += 1
+			var a: Vector2 = _knots[k]
+			var b: Vector2 = _knots[k + 1]
+			g += lerpf(a.y, b.y, clampf((v - a.x) / (b.x - a.x), 0.0, 1.0)) + 2.5 * _front_n.get_noise_1d(v * 6.0)
+	return g
+
+## Where a point is, relative to the frontier: below `_fx` it is ours.
+func _across(x: float, y: float) -> float:
+	var d:= Vector2(x, y) - MID
+	return d.dot(_axis) - _bend(d.dot(Vector2(-_axis.y, _axis.x)))
+
+## Whether a point is in the frontier river.
+func _river(x: float, y: float) -> bool:
+	if _river_w <= 0.0:
+		return false
+	var d:= Vector2(x, y) - MID
+	var v: float = d.dot(Vector2(-_axis.y, _axis.x))
+	return v >= _river_lo and v <= _river_hi and absf(d.dot(_axis) - _bend(v) - _fx) < _river_w * 0.5
+
+## Lays the frontier: its style, how it leans and its wedge, then slid along
+## the axis until our share of the land is what it should be (a little under
+## half). Fills `across` with each map unit's place relative to it.
+func _place_frontier(rng: RandomNumberGenerator, land: PackedByteArray, across: PackedFloat32Array) -> void:
+	var roll: float = rng.randf()
+	_style = WINDING if roll < 0.45 else (JAGGED if roll < 0.75 else SURVEYED)
+	_slope = _r(rng, -0.3, 0.3)
+	_sal_v = _r(rng, -220, 220)
+	_sal_a = 0.0 if rng.randf() < 0.35 else _r(rng, 60, 170) * (1.0 if rng.randf() < 0.5 else -1.0)
+	_sal_w = _r(rng, 45, 120)
+	if _style == SURVEYED:
+		var v: float = -700.0
+		_knots.append(Vector2(v, 0.0))
+		while v < 700.0:
+			v += _r(rng, 90, 260)
+			_knots.append(Vector2(v, _r(rng, -70, 70)))
+	var ws:= PackedFloat32Array()
+	var lo_v: float = 3.4e38
+	var hi_v: float = -3.4e38
+	var perp:= Vector2(-_axis.y, _axis.x)
+	for y: int in H:
+		for x: int in W:
+			var i: int = y * W + x
+			if land[i] == 0:
+				across[i] = 3.4e38
+				continue
+			var w: float = _across(x + 0.5, y + 0.5)
+			across[i] = w
+			ws.append(w)
+			var v: float = (Vector2(x + 0.5, y + 0.5) - MID).dot(perp)
+			lo_v = minf(lo_v, v)
+			hi_v = maxf(hi_v, v)
+	ws.sort()
+	_fx = ws[clampi(int(ws.size() * _r(rng, 0.42, 0.5)), 0, ws.size() - 1)]
+	# Now and then a river runs along part of it, in from one coast.
+	if rng.randf() < 0.35:
+		_river_w = _r(rng, 4.5, 7.0)
+		var f: float = _r(rng, 0.35, 0.7)
+		if rng.randf() < 0.5:
+			_river_lo = lo_v - 50.0
+			_river_hi = lerpf(lo_v, hi_v, f)
+		else:
+			_river_lo = lerpf(lo_v, hi_v, 1.0 - f)
+			_river_hi = hi_v + 50.0
+
+## Each country in one piece: any stray bit of one (cut off by the other's
+## bulge) goes to the other.
+func _one_piece(side: PackedInt32Array) -> void:
+	for pass_: int in 2:
+		var res: Array = _label(side)
+		var comp: PackedInt32Array = res[0]
+		var sizes: PackedInt32Array = res[1]
+		var vals: PackedInt32Array = res[2]
+		var best:= PackedInt32Array([-1, -1])
+		for c: int in sizes.size():
+			var s: int = vals[c]
+			if best[s] < 0 or sizes[c] > sizes[best[s]]:
+				best[s] = c
+		var moved: bool = false
+		for i: int in W * H:
+			var c: int = comp[i]
+			if c >= 0 and c != best[vals[c]]:
+				side[i] = 1 - vals[c]
+				moved = true
+		if not moved:
+			return
+
+## Labels the pieces of `v`: cells side by side with the same value (not
+## below 0). Returns each cell's piece (or -1), and each piece's size and value.
+static func _label(v: PackedInt32Array) -> Array:
+	var comp:= PackedInt32Array()
+	comp.resize(W * H)
+	comp.fill(-1)
+	var sizes:= PackedInt32Array()
+	var vals:= PackedInt32Array()
+	var stack:= PackedInt32Array()
+	stack.resize(W * H)
+	var n_all: int = W * H
+	for i: int in n_all:
+		var val: int = v[i]
+		if val < 0 or comp[i] >= 0:
+			continue
+		var c: int = sizes.size()
+		var n: int = 0
+		var top: int = 1
+		comp[i] = c
+		stack[0] = i
+		while top > 0:
+			top -= 1
+			var j: int = stack[top]
+			n += 1
+			var x: int = j % W
+			if x > 0 and comp[j - 1] < 0 and v[j - 1] == val:
+				comp[j - 1] = c
+				stack[top] = j - 1
+				top += 1
+			if x + 1 < W and comp[j + 1] < 0 and v[j + 1] == val:
+				comp[j + 1] = c
+				stack[top] = j + 1
+				top += 1
+			if j >= W and comp[j - W] < 0 and v[j - W] == val:
+				comp[j - W] = c
+				stack[top] = j - W
+				top += 1
+			if j + W < n_all and comp[j + W] < 0 and v[j + W] == val:
+				comp[j + W] = c
+				stack[top] = j + W
+				top += 1
+		sizes.append(n)
+		vals.append(val)
+	return [comp, sizes, vals]
+
+## The province a point belongs to: the nearest of seeds `a` to `b` - 1,
+## measured from where the noise warp moves it, so borders wind.
+func _nearest(seeds: PackedVector2Array, x: float, y: float, a: int, b: int) -> int:
+	var q:= Vector2(x + _warp_a * _wobble.get_noise_2d(x, y), y + _warp_a * _wobble.get_noise_2d(x + 517.0, y - 311.0))
+	var best: int = a
+	var bd: float = 3.4028235e+38
+	for k: int in range(a, b):
+		var d: float = q.distance_squared_to(seeds[k])
 		if d < bd:
 			bd = d
-			best = i
-	var b: Vector2 = poly[best]
-	var out:= Vector2(cos(a), sin(a))
-	var side:= Vector2(-out.y, out.x)
-	var w: float = _r(rng, 9, 15)
-	var neck: float = _r(rng, 14, 30)
-	var rx: float = _r(rng, 34, 52)
-	var ry: float = rx * _r(rng, 1.15, 1.5)
-	# Keep the head on the map.
-	var room: float = (H - 18 - b.y) / maxf(0.2, out.y) if out.y > 0 else 200.0
-	var shrink: float = clampf((room - neck) / (2 * rx), 0.4, 1.0)
-	rx *= shrink
-	ry *= shrink
-	var dlt: float = asin(clampf(w / ry, 0, 0.9))
-	var h: Vector2 = b + out * (neck + rx * cos(dlt))
-	var pen:= PackedVector2Array()
-	pen.append(b - side * w)
-	pen.append(b - side * w + out * neck)
-	var n: int = 16
-	for k: int in range(1, n):
-		var beta: float = PI + dlt + (TAU - 2 * dlt) * k / n
-		var wob: float = 1.0 + _r(rng, -0.06, 0.06)
-		pen.append(h + out * rx * cos(beta) * wob + side * ry * sin(beta) * wob)
-	pen.append(b + side * w + out * neck)
-	pen.append(b + side * w)
-	var res:= PackedVector2Array()
-	for i: int in poly.size():
-		if i == best:
-			for p: Vector2 in pen:
-				res.append(Vector2(clampf(p.x, 14, W - 14), clampf(p.y, 14, H - 14)))
-		else:
-			res.append(poly[i])
-	return [res, b + out * neck]
+			best = k
+	return best
 
-static func _inside(poly: PackedVector2Array, p: Vector2) -> bool:
-	var inside: bool = false
-	var j: int = poly.size() - 1
-	for i: int in poly.size():
-		var a: Vector2 = poly[i]
-		var b: Vector2 = poly[j]
-		if (a.y > p.y) != (b.y > p.y) and p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x:
-			inside = not inside
-		j = i
-	return inside
+## Each province in one piece: a stray bit of one goes to the province of
+## the same country it touches most.
+static func _merge_strays(reg: PackedInt32Array) -> void:
+	var res: Array = _label(reg)
+	var comp: PackedInt32Array = res[0]
+	var sizes: PackedInt32Array = res[1]
+	var vals: PackedInt32Array = res[2]
+	var best: Dictionary = {}
+	for c: int in sizes.size():
+		var r: int = vals[c]
+		if not best.has(r) or sizes[c] > sizes[best[r]]:
+			best[r] = c
+	var votes: Dictionary = {}
+	for i: int in W * H:
+		var c: int = comp[i]
+		if c < 0 or best[vals[c]] == c:
+			continue
+		var x: int = i % W
+		for j: int in [i - 1 if x > 0 else -1, i + 1 if x + 1 < W else -1, i - W, i + W]:
+			if j < 0 or j >= W * H:
+				continue
+			var o: int = reg[j]
+			if o < 0 or o == vals[c] or comp[j] == c:
+				continue
+			if not votes.has(c):
+				votes[c] = {}
+			votes[c][o] = int(votes[c].get(o, 0)) + 1
+	var to:= {}
+	for c: int in votes:
+		var top: int = -1
+		var tn: int = 0
+		for o: int in votes[c]:
+			if votes[c][o] > tn:
+				tn = votes[c][o]
+				top = o
+		to[c] = top
+	for i: int in W * H:
+		var c: int = comp[i]
+		if c >= 0 and to.has(c):
+			reg[i] = to[c]
+
+## The id texture, at S texels per map unit: copied from the map units where
+## all round is one province, worked out texel by texel along borders and
+## coasts so they are smooth; the capital cities are rings round each capital.
+func _fine_ids(reg: PackedInt32Array, seeds: PackedVector2Array, n0: int, n1: int, city: PackedInt32Array) -> void:
+	var mixed:= PackedByteArray()
+	mixed.resize(W * H)
+	for y: int in H:
+		for x: int in W:
+			var i: int = y * W + x
+			var v: int = reg[i]
+			var m: int = 0
+			for dy: int in range(-1, 2):
+				var yy: int = y + dy
+				if yy < 0 or yy >= H:
+					continue
+				for dx: int in range(-1, 2):
+					var xx: int = x + dx
+					if xx >= 0 and xx < W and reg[yy * W + xx] != v:
+						m = 1
+			mixed[i] = m
+	ids.resize(RW * RH)
+	var cr2: float = CITY_R * CITY_R
+	for fy: int in RH:
+		var cy: int = fy / S
+		var py: float = (fy + 0.5) / S
+		var o: int = fy * RW
+		for fx: int in RW:
+			var cx: int = fx / S
+			var ci: int = cy * W + cx
+			var v: int = reg[ci]
+			var px: float = (fx + 0.5) / S
+			if mixed[ci] == 1:
+				var e: int = -1
+				if _land(px, py) > LAND and not _river(px, py):
+					var sv: int = 0 if _across(px, py) < _fx else 1
+					e = _nearest(seeds, px, py, 0 if sv == 0 else n0, n0 if sv == 0 else n0 + n1)
+				if e != v and _around(reg, cx, cy, e):
+					v = e
+			if v < 0:
+				ids[o + fx] = NONE
+			else:
+				var s: int = 0 if v < n0 else 1
+				ids[o + fx] = city[s] if Vector2(px, py).distance_squared_to(capital[s]) < cr2 else v
+
+## Whether province `e` (or sea, -1) is in or next to map unit `x`, `y`.
+static func _around(reg: PackedInt32Array, x: int, y: int, e: int) -> bool:
+	for dy: int in range(-1, 2):
+		var yy: int = y + dy
+		if yy < 0 or yy >= H:
+			continue
+		for dx: int in range(-1, 2):
+			var xx: int = x + dx
+			if xx >= 0 and xx < W and reg[yy * W + xx] == e:
+				return true
+	return false
 
 static func _keep_mainland(side: PackedInt32Array) -> PackedInt32Array:
 	var comp:= PackedInt32Array()
@@ -1247,10 +941,6 @@ func _compute_edge() -> void:
 			var border: bool = c == NONE or x == 0 or y == 0 or x == W - 1 or y == H - 1 or cl[i - 1] != c or cl[i + 1] != c or cl[i - W] != c or cl[i + W] != c
 			e[i] = 0.0 if border else 1000000000.0
 	edge = _chamfer_passes(e)
-
-static func _smooth(t: float) -> float:
-	t = clampf(t, 0.0, 1.0)
-	return t * t * (3 - 2 * t)
 
 static func _fbm(x: float, y: float, s: int) -> float:
 	var sum: float = 0.0

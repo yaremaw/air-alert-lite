@@ -144,18 +144,28 @@ static func draw_ci(ci: CanvasItem, g: int, c: Vector2, s: float, col: Color, an
 
 static var TRIS: Dictionary = {}
 
+## A ballistic missile in flight, nose along +x: a slim body, a pointed nose,
+## four fins at the tail (two seen from above).
+const MISSILE_PTS: PackedVector2Array = [
+	Vector2(7.5, 0), Vector2(5.0, -1.2), Vector2(-4.5, -1.2), Vector2(-6.5, -3.2), Vector2(-7.6, -3.2), Vector2(-7.0, -1.2),
+	Vector2(-7.0, 1.2), Vector2(-7.6, 3.2), Vector2(-6.5, 3.2), Vector2(-4.5, 1.2), Vector2(5.0, 1.2),
+]
+
+static func missile(b: LiteBatch, c: Vector2, s: float, col: Color, angle: float, outline: Variant = null, rim: bool = true) -> void:
+	b.shape(MISSILE_PTS, _cut(MISSILE_PTS), c, s, angle, col, outline, rim)
+
 static func _cut(pts: PackedVector2Array) -> PackedInt32Array:
 	if not TRIS.has(pts):
 		TRIS[pts] = Geometry2D.triangulate_polygon(pts)
 	return TRIS[pts]
 
-static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: float = 0, outline: Variant = null) -> void:
+static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: float = 0, outline: Variant = null, rim: bool = true) -> void:
 	match g:
 		LiteGlyph.CAPITAL: b.shape(STAR_PTS, _cut(STAR_PTS), c, s, angle, col, outline)
 		LiteGlyph.FACTORY: b.shape(FACTORY_PTS, _cut(FACTORY_PTS), c, s, angle, col, outline)
 		LiteGlyph.SAM: b.shape(SAM_PTS, _cut(SAM_PTS), c, s, angle, col, outline)
-		LiteGlyph.DRONE: b.shape(DRONE_PTS, _cut(DRONE_PTS), c, s, angle, col, outline)
-		LiteGlyph.CRUISE: b.shape(CRUISE_PTS, _cut(CRUISE_PTS), c, s, angle, col, outline)
+		LiteGlyph.DRONE: b.shape(DRONE_PTS, _cut(DRONE_PTS), c, s, angle, col, outline, rim)
+		LiteGlyph.CRUISE: b.shape(CRUISE_PTS, _cut(CRUISE_PTS), c, s, angle, col, outline, rim)
 		LiteGlyph.GUN:
 			var hub: Vector2 = c + Vector2(0, 1.6 * s)
 			b.line(hub, c + Vector2(-2.6, -4.2) * s, col, 1.3 * s)

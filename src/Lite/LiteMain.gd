@@ -355,13 +355,13 @@ func try_build() -> void:
 		if sim.build_factory(0, r) == null:
 			refuse("No free ground in %s" % map.regions[r].name)
 			return
-		audio.play("click.wav", -3.0)
+		audio.play("click.wav", -6.0)
 		return
 	if not sim.can_place(0, mouse):
 		refuse("Build on your own territory, a little away from other sites")
 		return
 	sim.build(0, k, mouse)
-	audio.play("click.wav", -3.0)
+	audio.play("click.wav", -6.0)
 
 func finish_route() -> void:
 	var pts: Array[Vector2] = drawing
@@ -396,7 +396,7 @@ func try_strike(route: Variant) -> void:
 		sim.strike(0, a, strike_target, n, null, 0.0, pts)
 	else:
 		sim.strike(0, a, strike_target, n)
-	audio.play("click.wav", -3.0)
+	audio.play("click.wav", -6.0)
 
 func refuse(why: String) -> void:
 	ui.hud.message(why)

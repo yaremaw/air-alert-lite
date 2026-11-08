@@ -215,6 +215,7 @@ func run_short(scene: String) -> void:
 		"assault": await scene_assault()
 		"epic": await scene_epic()
 		"tot": await scene_tot()
+		"siege": await scene_siege()
 	get_tree().quit()
 
 ## Keeps every weapon of ours on time: once it is in the air, its speed is set so it lands at
@@ -350,6 +351,111 @@ func scene_tot() -> void:
 		if b.alive and b.side == 1 and b.kind != LiteKind.CAPITAL:
 			left += 1
 	print("[short] tot hits %d within0.6s %d spread %.2f down %d sites_left %d" % [_tot_hits.size(), close, spread, _tot_down, left])
+
+## Each kind of weapon on its own clock: once in the air its speed is set so it lands at
+## _arrive_at[arm] (kinds not in it fly at their own pace).
+var _arrive_at: Dictionary = {}
+
+func _arrival_tune() -> void:
+	var done: Dictionary = {}
+	while true:
+		await get_tree().process_frame
+		for w: LiteWeapon in sim.weapons:
+			if w.alive and w.side == 0 and not done.has(w) and _arrive_at.has(w.arm):
+				done[w] = true
+				var left: float = float(_arrive_at[w.arm]) - sim.time
+				if left > 0.15:
+					var v: float = LiteRules.speed(w.arm)
+					w.speed = clampf((w.length - w.flown) / left, v * 0.5, v * 1.6)
+
+## The siege, a planned strike on a base held by four SAMs and six guns: three drone
+## swarms from three directions soak up the air defence (interceptors and tracer
+## everywhere), a cruise salvo comes in on both flanks while the SAMs reload, then a
+## ballistic salvo lands on the SAMs and the factories at once; the base burns.
+func scene_siege() -> void:
+	ui.visible = false
+	var c0: Vector2 = map.capital[0]
+	var c1: Vector2 = map.capital[1]
+	var east: Vector2 = (c1 - c0).normalized()
+	var north: Vector2 = east.orthogonal()
+	var front: Vector2 = _front(c0, c1)
+	for b: LiteBuilding in sim.buildings:
+		if b.kind != LiteKind.CAPITAL:
+			b.alive = false
+	sim.buildings = sim.buildings.filter(func(b: LiteBuilding) -> bool: return b.alive)
+	var base: Vector2 = front + east * _num("depth", 125.0)
+	var put: Callable = func(kind: int, e: float, n: float) -> LiteBuilding:
+		return _put(1, kind, base + east * e + north * n, 0, 6)
+	var sams: Array = [put.call(LiteKind.SAM, -20, 72), put.call(LiteKind.SAM, -25, -72),
+		put.call(LiteKind.SAM, 55, 28), put.call(LiteKind.SAM, 60, -48)]
+	var guns: Array = [put.call(LiteKind.GUN, -58, 32), put.call(LiteKind.GUN, -58, -28), put.call(LiteKind.GUN, -12, 2),
+		put.call(LiteKind.GUN, 18, 80), put.call(LiteKind.GUN, 18, -84), put.call(LiteKind.GUN, 92, -2)]
+	var facs: Array = [put.call(LiteKind.FACTORY, 15, 32), put.call(LiteKind.FACTORY, 25, -22),
+		put.call(LiteKind.FACTORY, 95, 52), put.call(LiteKind.FACTORY, 100, -62), put.call(LiteKind.FACTORY, 132, 4)]
+	for arr: Array in [sams, guns, facs]:
+		while arr.has(null):
+			arr.erase(null)
+	sim.sams_on_drones[1] = true
+	sim.sides[0].money = 200000.0
+	sim.sides[1].money = 50000.0
+	var seed_: int = _rng_arg()
+	if seed_ >= 0:
+		sim._rng.seed = seed_
+	var cruise_at: float = _num("cruise", 10.8)
+	var ballistic_at: float = _num("ballistic", 12.6)
+	var la: Vector2 = front - east * 40 + north * 112
+	var lb: Vector2 = front - east * 48 - north * 104
+	var lc: Vector2 = front - east * 72
+	_cam_set(base - east * 70 + north * 55 - Vector2(150.0 / 1.9, 0), 1.9)
+	_aim_cam(base - east * 70 + north * 55, 1.9)
+	_director()
+	await _wait(0.5)
+	_mark("start")
+	var t0: float = sim.time
+	_arrive_at = { LiteArm.CRUISE: t0 + cruise_at, LiteArm.BALLISTIC: t0 + ballistic_at }
+	_arrival_tune()
+	_tot_watch()
+	# Three swarms, four abreast, from the north-west, the south-west and the west.
+	_wave(la, [sams[0], guns[0], guns[3]] if guns.size() > 3 else sams, 4, 4, 0.0, 7.0)
+	_wave(lb, [sams[1], guns[1], guns[4]] if guns.size() > 4 else sams, 4, 4, 1.1, 7.0)
+	_wave(lc, [guns[2], sams[0], sams[1]] if guns.size() > 2 else sams, 3, 4, 2.4, 7.0)
+	# The cruise salvo, two columns of five round the flanks, onto the factories and the guns.
+	var cr_t: Array = facs + guns
+	for i: int in 10:
+		var s: float = 1.0 if i % 2 == 0 else -1.0
+		var k: int = i / 2
+		var start: Vector2 = front - east * 160 + north * s * (40 + k * 6)
+		var wp: Vector2 = base - east * 85 + north * s * (118 + k * 4)
+		var t: LiteBuilding = cr_t[i % cr_t.size()]
+		var route: Array[Vector2] = [start, wp]
+		var est: float = (start.distance_to(wp) + wp.distance_to(t.pos)) / LiteRules.speed(LiteArm.CRUISE)
+		sim.strike(0, LiteArm.CRUISE, t.pos, 1, null, maxf(0.0, cruise_at - est - 0.4) + 0.05 * k, route)
+	# The ballistic salvo: every SAM and the biggest factories, all at once.
+	var bl_t: Array = sams + facs
+	for i: int in mini(8, bl_t.size()):
+		sim.strike(0, LiteArm.BALLISTIC, bl_t[i].pos, 1, null, ballistic_at - 1.9 + 0.03 * i)
+	# The camera: in on the first swarm reaching the guns, wide over the whole fight, after the
+	# cruise salvo into the base, close on its hits, then back for the ballistic salvo.
+	await _until(func() -> bool: return sim.time >= t0 + 3.6)
+	_aim_cam(base - east * 15, 1.42)
+	await _until(func() -> bool: return sim.time >= t0 + cruise_at - 2.6)
+	_aim_cam(base + east * 15, 1.55)
+	await _until(func() -> bool: return sim.time >= t0 + cruise_at - 0.4)
+	_aim_cam(base + east * 40, 1.78)
+	await _until(func() -> bool: return sim.time >= t0 + ballistic_at - 1.0)
+	_aim_cam(base + east * 30, 1.3)
+	await _until(func() -> bool: return sim.time >= t0 + ballistic_at)
+	_mark("impact")
+	await _until(func() -> bool: return sim.time >= t0 + ballistic_at + 2.5)
+	_aim_cam(base + east * 38, 1.4)
+	await _until(func() -> bool: return sim.time >= t0 + ballistic_at + 6.5)
+	_mark("end")
+	var left: int = 0
+	for b: LiteBuilding in sim.buildings:
+		if b.alive and b.side == 1 and b.kind != LiteKind.CAPITAL:
+			left += 1
+	print("[short] siege hits %d down %d intercepts %d sites_left %d of %d" % [_tot_hits.size(), _tot_down,
+		sim.sides[1].downed, left, sams.size() + guns.size() + facs.size()])
 
 ## A tight wave of drones from one launch point: rows of `cols` side by side, each column
 ## flying its own lane to its own target, so the wave holds together until it splits
@@ -890,10 +996,10 @@ def prepare(w=1920, h=1080, boost=False):
     if boost:
         # Bigger blasts and kills, longer and brighter interceptor trails: for show only.
         for old, new in (("_parts.blast(f.a, f.size)", "_parts.blast(f.a, f.size * 1.5)"),
-                         ("_parts.pop(f.a, f.size)", "_parts.pop(f.a, f.size * 1.7)"),
-                         ("Color(1, 1, 1, 0.5 * (k + 1) / (n + 1)), Color(1, 1, 1, 0.5 * (k + 2) / (n + 1)), 1.2)",
-                          "Color(1, 1, 1, 0.75 * (k + 1) / (n + 1)), Color(1, 1, 1, 0.75 * (k + 2) / (n + 1)), 2.0)"),
-                         ("_b.disc(i.pos, 1.8, Color.WHITE)", "_b.disc(i.pos, 2.6, Color.WHITE)")):
+                         ("_parts.pop(at, f.size)", "_parts.pop(at, f.size * 1.7)"),
+                         ("Color(0.86, 0.87, 0.9, 0.5 * a * a); var smoke_h: float = 2.5 + 7.0 * age",
+                          "Color(0.86, 0.87, 0.9, 0.7 * a * a); var smoke_h: float = 3.5 + 8.0 * age"),
+                         ("LiteGlyphs.missile(_b, head, 0.55,", "LiteGlyphs.missile(_b, head, 0.75,")):
             assert old in v, old
             v = v.replace(old, new, 1)
         sim_gd = os.path.join(proj, "src", "Lite", "LiteSim.gd")

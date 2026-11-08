@@ -64,6 +64,10 @@ var _tmp: Array[LiteRegion] = []
 var _ids: int = 0
 var _raids: int = 0
 var _alert_tick: float = 0.0
+## Spotting (weapons seen by the other side, buildings seen from the air)
+## is checked ten times a second rather than every step: it scans every
+## weapon against every building, and a tenth of a second is never noticed.
+var _spot_tick: float = 0.0
 
 var slots: PackedInt32Array = PackedInt32Array()
 var _ruins: Array[Ruin] = []
@@ -297,10 +301,15 @@ func step(dt: float) -> void:
 			_queue.remove_at(i)
 			launch(p)
 	move_weapons(dt)
-	detect()
+	_spot_tick -= dt
+	var spotting: bool = _spot_tick <= 0
+	if spotting:
+		_spot_tick += 0.1
+		detect()
 	air_defence(dt)
 	move_interceptors(dt)
-	reveal()
+	if spotting:
+		reveal()
 	_alert_tick -= dt
 	if _alert_tick <= 0:
 		_alert_tick += 0.25
@@ -405,11 +414,19 @@ func launch(p: Pending) -> void:
 			w.aim = b
 	build_path(w, route)
 	w.dir = (w.path[0] - start).normalized()
+	if arm == LiteArm.BALLISTIC:
+		w.setup_arc(map.land_rect.grow(6))
+	else:
+		# Side by side with the others of its salvo: the middle lane first,
+		# then one each side, further out.
+		var k: int = p.raid.launched % 6
+		w.lane = (0.0 if k == 0 else float((k + 1) / 2) * (1.0 if k % 2 == 1 else -1.0)) + _rng.randf_range(-0.3, 0.3)
 	weapons.append(w)
 	p.raid.launched += 1
 	sides[p.side].launched += 1
 	stats.on_launch(w, time)
-	fx.append(LiteFx.new(LiteFxKind.LAUNCH, start, Vector2.ZERO, 0, 0.7, 0, p.side))
+	# `size` carries the arm, so the view can give a ballistic launch its own effect.
+	fx.append(LiteFx.new(LiteFxKind.LAUNCH, start, Vector2.ZERO, 0, 0.7, arm, p.side))
 	events.append(LiteEvent.new(LiteEv.LAUNCH, p.side, map.region_at(target), start, arm, 0, 0, p.raid))
 
 func origin_near(side: int, at: Vector2) -> Vector2:
@@ -482,8 +499,9 @@ func build_path(w: LiteWeapon, route: Array[Vector2]) -> void:
 func move_weapons(dt: float) -> void:
 	for w: LiteWeapon in weapons:
 		if not w.alive: continue
-		var move: float = w.speed * dt
+		var move: float = w.speed * dt * (LiteRules.ballistic_pace(w.progress) if w.arm == LiteArm.BALLISTIC else 1.0)
 		w.flown += move
+		w.steer_lane(dt)
 		while move > 0 and w.leg < w.path.size():
 			var to: Vector2 = w.path[w.leg] - w.pos
 			var d: float = to.length()
@@ -587,7 +605,8 @@ func kill(w: LiteWeapon, by: int, shooter: LiteBuilding) -> void:
 	w.raid.down += 1
 	sides[by].downed += 1
 	stats.on_down(w, time)
-	fx.append(LiteFx.new(LiteFxKind.POP, w.pos, Vector2.ZERO, 0, 0.5, 6 if w.arm == LiteArm.DRONE else 8, by))
+	# `b.y` is how high it was, for drawing the burst in the air.
+	fx.append(LiteFx.new(LiteFxKind.POP, w.pos, w.lift_vec() + w.off, 0, 0.5, 6 if w.arm == LiteArm.DRONE else 8, by))
 	events.append(LiteEvent.new(LiteEv.SHOT_DOWN, by, map.region_at(w.pos), w.pos, w.arm, 0, 0, w.raid))
 	finish(w.raid)
 
@@ -659,7 +678,7 @@ func move_interceptors(dt: float) -> void:
 		i.age += dt
 		if i.target.alive: i.goal = i.target.pos
 		var to: Vector2 = i.goal - i.pos
-		var step: float = LiteRules.INTERCEPTOR_SPEED * dt
+		var step: float = LiteRules.INTERCEPTOR_SPEED * LiteRules.sam_pace(i.age) * dt
 		var d: float = to.length()
 		i.trail.append(i.pos)
 		if i.trail.size() > 8: i.trail.remove_at(0)
@@ -671,7 +690,7 @@ func move_interceptors(dt: float) -> void:
 		if i.target.alive and _rng.randf() < LiteRules.sam_pk(i.target.arm): kill(i.target, i.side, i.from)
 		else:
 			if i.target.alive: i.target.engaged -= 1
-			fx.append(LiteFx.new(LiteFxKind.PUFF, i.pos, Vector2.ZERO, 0, 0.45, 4, i.side))
+			fx.append(LiteFx.new(LiteFxKind.PUFF, i.pos, i.target.lift_vec() + i.target.off, 0, 0.45, 4, i.side))
 
 func reveal() -> void:
 	for w: LiteWeapon in weapons:

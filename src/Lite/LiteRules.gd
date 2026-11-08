@@ -21,7 +21,8 @@ const SAM_RACK: int = 6
 const SAM_RELOAD: float = 3.5
 const SAM_INTERVAL: float = 0.7
 const GUN_INTERVAL: float = 0.45
-const INTERCEPTOR_SPEED: float = 330.0
+## A SAM's top speed; it leaves the rail slower and accelerates (see sam_pace).
+const INTERCEPTOR_SPEED: float = 160.0
 const ALL_CLEAR_AFTER: float = 3.0
 
 static func cost_kind(k: int) -> int:
@@ -62,7 +63,24 @@ static func speed(a: int) -> float:
 	match a:
 		LiteArm.DRONE: return 26.0
 		LiteArm.CRUISE: return 72.0
-		_: return 220.0
+		_: return 165.0
+
+## A ballistic missile is slow off its launcher and gathers speed all the way
+## down: its speed, as a share of `speed`, at progress `p` (half at launch,
+## 1.8 times at impact).
+static func ballistic_pace(p: float) -> float:
+	return 0.5 + 1.3 * p * p
+
+## Over a whole flight that averages out to `speed` divided by this.
+const BALLISTIC_SLOWER: float = 1.26
+
+## How fast a weapon covers its whole route on average, for planning.
+static func mean_speed(a: int) -> float:
+	return speed(a) / BALLISTIC_SLOWER if a == LiteArm.BALLISTIC else speed(a)
+
+## A SAM's speed `age` seconds after launch, as a share of INTERCEPTOR_SPEED.
+static func sam_pace(age: float) -> float:
+	return minf(1.3, 0.4 + 2.0 * age)
 
 static func damage(a: int) -> float:
 	match a:

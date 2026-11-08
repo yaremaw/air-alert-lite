@@ -16,6 +16,47 @@ var _sim_time: float = -1.0
 var _shake: float = 0.0
 var _shake_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
+## The paths missiles leave in the air: a point every few map units, each
+## fading over `fade` seconds of game time, so a trail outlives its missile
+## and thins away slowly instead of vanishing with it.
+class Trace:
+	var pts: PackedVector2Array = PackedVector2Array()
+	var born: PackedFloat32Array = PackedFloat32Array()
+	## Per point, how thick its smoke is, 0 (the trail's own thin line) to 1
+	## (a motor's smoke at full burn). It changes smoothly along the trail.
+	var thick: PackedFloat32Array = PackedFloat32Array()
+	## The thin line: its colour (and alpha), its half width and how much
+	## wider it spreads as it ages.
+	var col: Color = Color.WHITE
+	var half: float = 1.5
+	var spread: float = 2.5
+	var fade: float = 3.0
+	## Where its maker is now, while it lives, and how thick its smoke is
+	## there: the trail runs right up to it.
+	var head: Vector2 = Vector2.ZERO
+	var head_thick: float = 0.0
+	var live: bool = true
+	## A smoke trail (a SAM's, a ballistic missile's) rather than a faint wake.
+	var smoky: bool = false
+
+## Live trails by the missile or interceptor that makes them; finished ones.
+var _traces: Dictionary = {}
+var _old_traces: Array[Trace] = []
+const SAM_FADE: float = 4.5
+const SAM_SMOKE: Color = Color(0.86, 0.87, 0.9, 0.38)
+const BALLISTIC_FADE: float = 10.0
+## A ballistic missile's motor burns for this much of its flight.
+const BURN: float = 0.22
+## A SAM climbs almost straight up for this much of its flight, then turns over
+## onto its target.
+const SAM_CLIMB: float = 0.3
+const DRONE_WAKE: Color = Color(0.78, 0.8, 0.85, 0.22)
+const CRUISE_WAKE: Color = Color(0.92, 0.94, 0.98, 0.4)
+
+## Fires left burning where warheads landed: x, y, the game time the fire
+## dies, and its size.
+var _fires: Array[Vector4] = []
+
 var sim: LiteSim:
 	get: return main.sim
 var map: LiteMap:
@@ -75,7 +116,132 @@ func _process(delta: float) -> void:
 		_pal.set_pixel(i, 0, _shown[i])
 	_pal_tex.update(_pal)
 	_particles(dt)
+	_update_traces()
 	queue_redraw()
+
+func _update_traces() -> void:
+	var sim_: LiteSim = main.sim
+	var now: float = sim_.time
+	for i: LiteInterceptor in sim_.interceptors:
+		if i.alive:
+			var f: float = sam_frac(i)
+			# Thick smoke on the climb, thinning smoothly as it turns over.
+			var k: float = 1.0 - smoothstep(SAM_CLIMB - 0.08, SAM_CLIMB + 0.3, f)
+			_feed(i, sam_point(i, f), k, SAM_SMOKE, 1.6, 4.0, SAM_FADE, now, 3.0)
+	for i: Variant in _sam_k.keys():
+		if not i.alive:
+			_sam_k.erase(i)
+	for w: LiteWeapon in sim_.weapons:
+		if not shown_weapon(w):
+			continue
+		match w.arm:
+			LiteArm.BALLISTIC:
+				var p: float = w.progress
+				# Thick smoke while the motor burns, thinning into a pale streak.
+				var k: float = 1.0 - smoothstep(BURN * 0.55, BURN * 1.5, p)
+				_feed(w, _air(w, p), k, Color(weapon_color(w.side).lightened(0.55), 0.6), 1.5, 2.5, BALLISTIC_FADE, now, 5.0)
+			LiteArm.CRUISE:
+				_feed(w, w.view_pos() - w.dir * 5.4, 0.0, CRUISE_WAKE, 1.0, 2.5, 3.0, now, 7.0)
+			_:
+				_feed(w, w.view_pos() - w.dir * 2.4, 0.0, DRONE_WAKE, 1.0, 2.5, 1.8, now, 5.0)
+	for owner: Variant in _traces.keys():
+		if not owner.alive:
+			var done: Trace = _traces[owner]
+			done.live = false
+			# A smoke trail cut off in the air: the smoke billows where it ends.
+			var n: int = done.pts.size()
+			if done.smoky and n >= 2 and not (owner is LiteWeapon and owner.arm == LiteArm.BALLISTIC and owner.progress > 0.97):
+				var tip: Vector2 = done.head
+				_parts.trail_end(tip, (tip - done.pts[n - 2]).normalized())
+				done.pts.append(tip)
+				done.born.append(now)
+				done.thick.append(done.head_thick)
+			_old_traces.append(done)
+			_traces.erase(owner)
+	var k: int = 0
+	for t: Trace in _old_traces:
+		_trim(t, now)
+		if t.pts.size() >= 2:
+			_old_traces[k] = t
+			k += 1
+	_old_traces.resize(k)
+	for t: Trace in _traces.values():
+		_trim(t, now)
+
+func _feed(owner: Variant, p: Vector2, thick: float, col: Color, half: float, spread: float, fade: float, now: float, gap: float) -> void:
+	var t: Trace = _traces.get(owner)
+	if t == null:
+		t = Trace.new()
+		t.col = col
+		t.half = half
+		t.spread = spread
+		t.fade = fade
+		t.smoky = owner is LiteInterceptor or (owner is LiteWeapon and owner.arm == LiteArm.BALLISTIC)
+		_traces[owner] = t
+	t.head = p
+	t.head_thick = thick
+	var n: int = t.pts.size()
+	if n == 0 or t.pts[n - 1].distance_to(p) > gap:
+		t.pts.append(p)
+		t.born.append(now)
+		t.thick.append(thick)
+
+## Drops the points that have faded out, oldest first.
+func _trim(t: Trace, now: float) -> void:
+	var cut: int = 0
+	while cut < t.born.size() and now - t.born[cut] >= t.fade:
+		cut += 1
+	if cut > 0:
+		t.pts = t.pts.slice(cut)
+		t.born = t.born.slice(cut)
+		t.thick = t.thick.slice(cut)
+
+## A trail, drawn as one soft ribbon: smoke that spreads and thins as it ages,
+## a pale streak, or a faint wake; all of it fades to nothing.
+var _rp: PackedVector2Array = PackedVector2Array()
+var _rh: PackedFloat32Array = PackedFloat32Array()
+var _rc: PackedColorArray = PackedColorArray()
+
+func draw_trace(t: Trace, now: float) -> void:
+	var n: int = t.pts.size()
+	var count: int = n + (1 if t.live and n > 0 else 0)
+	if count < 2:
+		return
+	_rp.resize(count)
+	_rh.resize(count)
+	_rc.resize(count)
+	for k: int in count:
+		var age: float = clampf((now - t.born[k]) / t.fade, 0.0, 1.0) if k < n else 0.0
+		var a: float = 1.0 - age
+		var w: float = t.thick[k] if k < n else t.head_thick
+		_rp[k] = t.pts[k] if k < n else t.head
+		# One ribbon all along: the thin line and the thick smoke blend into
+		# each other, in colour, width and strength, as `thick` changes.
+		var thin:= Color(t.col, t.col.a * a)
+		var thin_h: float = t.half + t.spread * age
+		if w <= 0.001:
+			_rc[k] = thin; _rh[k] = thin_h
+			continue
+		var smoke:= Color(0.86, 0.87, 0.9, 0.5 * a * a); var smoke_h: float = 2.5 + 7.0 * age
+		_rc[k] = thin.lerp(smoke, w)
+		_rh[k] = lerpf(thin_h, smoke_h, w)
+	# The oldest end thins away instead of stopping square.
+	_rc[0] = Color(_rc[0], 0.0)
+	_rh[0] *= 0.5
+	# Where a trail was cut off it does not stop dead either: its last stretch
+	# spreads and fades out, into the smoke left there.
+	if not t.live:
+		var span: float = 22.0 if t.smoky else 10.0
+		var run: float = 0.0
+		var k: int = count - 1
+		while k > 0 and run < span:
+			var s: float = run / span
+			s = s * s * (3.0 - 2.0 * s)
+			_rc[k] = Color(_rc[k], _rc[k].a * s)
+			_rh[k] *= 1.0 + 1.3 * (1.0 - s)
+			run += _rp[k].distance_to(_rp[k - 1])
+			k -= 1
+	_b.ribbon(_rp, _rh, _rc)
 
 func _particles(dt: float) -> void:
 	var sim_: LiteSim = main.sim
@@ -89,25 +255,60 @@ func _particles(dt: float) -> void:
 		match f.kind:
 			LiteFxKind.BLAST:
 				_parts.blast(f.a, f.size)
+				var heavy: bool = f.size >= 20.0
+				if heavy:
+					_parts.ballistic_blast(f.a, f.size, LIFT)
+				# Ballistic and cruise warheads leave a fire burning, and smoke rolling off it.
+				if f.size >= 14.0:
+					_fires.append(Vector4(f.a.x, f.a.y, sim_.time + (16.0 if heavy else 7.0), f.size * (1.0 if heavy else 0.75)))
 				if f.side == 1:
-					_shake = minf(9.0, _shake + f.size * 0.3)
+					_shake = minf(14.0 if heavy else 9.0, _shake + f.size * (0.6 if heavy else 0.3))
 			LiteFxKind.POP:
-				_parts.pop(f.a, f.size)
+				var at: Vector2 = f.a + f.b
+				_parts.pop(at, f.size)
+				_parts.debris(at, -LIFT, maxf(f.b.length(), 5.0))
 			LiteFxKind.LAUNCH:
-				if f.life > 0.6:
+				if f.life > 0.6 and int(f.size) == LiteArm.BALLISTIC:
+					_parts.ballistic_launch(f.a, LIFT)
+				elif f.life > 0.6:
 					_parts.launch(f.a)
 				else:
 					# A SAM firing: ours loud, the enemy's far off.
 					main.audio.play("sam_launch.wav", -13.0 if f.side == 0 else -23.0, 0.15)
+					_parts.sam_launch(f.a)
 			LiteFxKind.TRACER:
 				main.gun_shot_at[f.side] = sim_.time
 			LiteFxKind.PUFF:
-				_parts.puff(f.a, f.size)
+				_parts.puff(f.a + f.b, f.size)
 	_known = known
 	if dts > 0:
 		for s: LiteBuilding in sim_.buildings:
 			if not s.alive and sim_.time - s.dead_at < 25.0 and shown(s) and randf() < dts / 0.3:
 				_parts.ruin(s.pos)
+		# Motors leave puffs of smoke hanging in the air: a SAM's, thick while it
+		# climbs; a ballistic missile's while it burns.
+		for i: LiteInterceptor in sim_.interceptors:
+			if not i.alive:
+				continue
+			var f: float = sam_frac(i)
+			if f < SAM_CLIMB and randf() < dts / 0.03:
+				_parts.contrail(sam_point(i, f), 2.0, 7.0, 2.5, 4.0)
+		for w: LiteWeapon in sim_.weapons:
+			if w.arm == LiteArm.BALLISTIC and shown_weapon(w) and w.progress < BURN and randf() < dts / 0.015:
+				var p: float = w.progress
+				_parts.contrail(_air(w, p) - _air_dir(w, p) * 9.0, 3.0, 11.0, 4.0, 7.0)
+		# The fires: fiercest at first, dying down.
+		var k: int = 0
+		for f: Vector4 in _fires:
+			var left: float = f.z - sim_.time
+			if left <= 0.0:
+				continue
+			_fires[k] = f
+			k += 1
+			var fierce: float = clampf(left / 12.0, 0.15, 1.0)
+			if randf() < dts / 0.06:
+				_parts.burn(Vector2(f.x, f.y), f.w, fierce, LIFT)
+		_fires.resize(k)
 	_parts.step(dts)
 	_shake *= exp(-dt * 6.0)
 	if _shake > 0.15:
@@ -120,6 +321,90 @@ func shown(b: LiteBuilding) -> bool:
 
 func shown_weapon(w: LiteWeapon) -> bool:
 	return w.alive and (w.seen[0] or main.sim.winner >= 0)
+
+## Height on the map is drawn as a lift towards the top left, so the sun is up
+## there and shadows fall to the bottom right. A weapon's own position (`pos`)
+## is its ground track, where its shadow lies.
+const LIFT: Vector2 = Vector2(-0.42, -0.91)
+
+static func lifted(p: Vector2, h: float) -> Vector2:
+	return p + LIFT * h
+
+## Where a ballistic missile is in the air at progress `p`: its track is the
+## straight line from launcher to target, its arc drawn square to it (see
+## LiteWeapon.setup_arc).
+static func _air(w: LiteWeapon, p: float) -> Vector2:
+	return w.start.lerp(w.target, p) + w.arc * w.altitude_at(p)
+
+## Which way it points there, on screen.
+static func _air_dir(w: LiteWeapon, p: float) -> Vector2:
+	var a: float = clampf(p - 0.01, 0.0, 0.98)
+	var d: Vector2 = _air(w, a + 0.02) - _air(w, a)
+	return d.normalized() if d.length() > 0.001 else w.dir
+
+## A SAM as drawn. The sim flies it straight at its target; on screen it
+## follows one smooth curve: straight up off its launcher, bending over and
+## down onto where its target is drawn, so the two meet in the air. The curve
+## is a quadratic Bezier from the launcher, through a point high above it, to
+## the target; how far along it the SAM is only ever grows, so it never jumps
+## back as its target moves.
+
+## How far along its flight a SAM is in the sim, 0 to 1.
+static func _sam_f(i: LiteInterceptor, at: Vector2) -> float:
+	if i.from == null:
+		return 1.0
+	var d0: float = i.from.pos.distance_to(at)
+	return d0 / maxf(1.0, d0 + at.distance_to(i.goal))
+
+## How far along its curve it is drawn: never less than before.
+var _sam_k: Dictionary = {}
+
+func sam_frac(i: LiteInterceptor) -> float:
+	var k: float = maxf(float(_sam_k.get(i, 0.0)), _sam_f(i, i.pos))
+	_sam_k[i] = k
+	return k
+
+## Where a weapon is drawn: a ballistic missile up on its arc, the others on
+## their track.
+static func drawn_pos(w: LiteWeapon) -> Vector2:
+	return _air(w, w.progress) if w.arm == LiteArm.BALLISTIC else w.view_pos()
+
+static func _sam_top(i: LiteInterceptor) -> Vector2:
+	return lifted(i.from.pos, clampf(i.from.pos.distance_to(i.goal) * 0.6, 25.0, 75.0))
+
+## The point on its curve `f` of the way along.
+static func sam_point(i: LiteInterceptor, f: float) -> Vector2:
+	if i.from == null:
+		return i.pos
+	var u: float = 1.0 - f
+	return i.from.pos * (u * u) + _sam_top(i) * (2.0 * u * f) + drawn_pos(i.target) * (f * f)
+
+## The point on the ground under it.
+static func sam_shadow(i: LiteInterceptor, f: float) -> Vector2:
+	if i.from == null:
+		return i.pos
+	var u: float = 1.0 - f
+	return i.from.pos * (u * u + 2.0 * u * f) + i.target.pos * (f * f)
+
+## Which way it is flying there.
+static func sam_dir(i: LiteInterceptor, f: float) -> Vector2:
+	if i.from == null:
+		return -LIFT
+	var d: Vector2 = (_sam_top(i) - i.from.pos) * (2.0 * (1.0 - f)) + (drawn_pos(i.target) - _sam_top(i)) * (2.0 * f)
+	return d.normalized() if d.length() > 0.001 else -LIFT
+
+func draw_shadow(w: LiteWeapon) -> void:
+	var ang: float = w.dir.angle()
+	match w.arm:
+		LiteArm.DRONE:
+			LiteGlyphs.draw(_b, LiteGlyph.DRONE, w.view_pos() - LIFT * 5.0, WEAPON_SCALE, SHADOW, ang, null, false)
+		LiteArm.CRUISE:
+			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, w.view_pos() - LIFT * 4.0, WEAPON_SCALE, SHADOW, ang, null, false)
+		_:
+			# The higher it is, the softer and fainter its shadow.
+			var k: float = clampf(w.altitude() / 150.0, 0.0, 1.0)
+			_b.disc(w.pos, 3.0 + 7.0 * k, Color(0, 0, 0, 0.16 - 0.08 * k))
+			LiteGlyphs.missile(_b, w.pos, 1.1, Color(0, 0, 0, 0.5 - 0.3 * k), ang, null, false)
 
 func _draw() -> void:
 	var t0: float = LitePerf.now
@@ -149,6 +434,11 @@ func draw_all() -> void:
 				var glow: float = (1 - f.age / 10.0) * (0.75 + 0.25 * sin(_clock * 11.0 + f.a.x))
 				b.disc(f.a, f.size * 0.3, Color(1.0, 0.4, 0.1, 0.4 * glow))
 	_parts.draw_smoke(b)
+	var now: float = sim_.time
+	for t: Trace in _old_traces:
+		draw_trace(t, now)
+	for t: Trace in _traces.values():
+		draw_trace(t, now)
 
 	for w: LiteWeapon in sim_.weapons:
 		if not w.alive or w.arm != LiteArm.BALLISTIC:
@@ -159,6 +449,12 @@ func draw_all() -> void:
 		b.disc(w.target, 2.0, Color(col, 0.8))
 	for w: LiteWeapon in sim_.weapons:
 		if shown_weapon(w):
+			draw_shadow(w)
+	# One route per salvo, from its lead weapon: the rest fly the same way.
+	_route_raids.clear()
+	for w: LiteWeapon in sim_.weapons:
+		if shown_weapon(w) and not _route_raids.has(w.raid):
+			_route_raids[w.raid] = true
 			draw_route(w)
 	for s: LiteBuilding in sim_.buildings:
 		if shown(s):
@@ -171,6 +467,12 @@ func draw_all() -> void:
 			draw_interceptor(i)
 	for f: LiteFx in sim_.fx:
 		draw_fx(f)
+	# The ground lit orange under each fire, flickering.
+	for f: Vector4 in _fires:
+		var left: float = f.z - now
+		if left > 0.0:
+			var fl: float = 0.8 + 0.2 * sin(_clock * 9.0 + f.x) * sin(_clock * 13.0 + f.y)
+			b.puff(Vector2(f.x, f.y), f.w * 1.6, Color(1.0, 0.45, 0.12, 0.28 * clampf(left / 12.0, 0.2, 1.0) * fl))
 	_parts.draw_fire(b, _clock)
 	b.flush()
 	for s: LiteBuilding in sim_.buildings:
@@ -225,24 +527,17 @@ const OUR_WEAPON: Color = Color("#5cb0ff")
 static func weapon_color(side: int) -> Color:
 	return ENEMY_WEAPON if side == 1 else OUR_WEAPON
 
+var _route_raids: Dictionary = {}
+
 func draw_route(w: LiteWeapon) -> void:
 	var b: LiteBatch = _b
 	var col: Color = weapon_color(w.side)
-	var trail: PackedVector2Array = w.trail
-	var n: int = trail.size()
-	if w.arm == LiteArm.DRONE:
-		for i: int in n:
-			b.dot(trail[i], 1.1, Color(col, 0.65 * (i + 1) / (n + 1)))
-	else:
-		var width: float = 2.0 if w.arm == LiteArm.BALLISTIC else 1.5
-		for i: int in n:
-			var to: Vector2 = trail[i + 1] if i + 1 < n else w.pos
-			b.line_grad(trail[i], to, Color(col, 0.55 * (i + 1) / (n + 1)), Color(col, 0.55 * (i + 2) / (n + 1)), width)
+	# Only our own strikes show where they are going; trails are drawn as Traces.
 	if not LiteSettings.routes:
 		return
 	if w.side == 0:
 		_pts.clear()
-		_pts.append(w.pos)
+		_pts.append(w.view_pos())
 		var path: PackedVector2Array = w.path
 		for i: int in range(w.leg, path.size()):
 			_pts.append(path[i])
@@ -250,48 +545,95 @@ func draw_route(w: LiteWeapon) -> void:
 		var t: Vector2 = w.target
 		b.line(t + Vector2(-3, -3), t + Vector2(3, 3), Color(col, 0.6), 1.2)
 		b.line(t + Vector2(3, -3), t + Vector2(-3, 3), Color(col, 0.6), 1.2)
-	elif w.arm == LiteArm.BALLISTIC:
-		_pts.clear()
-		_pts.append(w.pos)
-		_pts.append(w.target)
-		b.dashed(_pts, Color(col, 0.4), 1.2, 6, 4)
-	else:
-		var ahead: float = w.speed * LiteRules.heading(w.arm)
-		var end: Vector2 = w.pos + w.dir * ahead
-		_pts.clear()
-		_pts.append(w.pos + w.dir * 8)
-		_pts.append(end)
-		b.dashed(_pts, Color(col, 0.38), 1.1, 4, 4)
-		var back: Vector2 = -w.dir * 5
-		b.line(end, end + back.rotated(0.6), Color(col, 0.5), 1.2)
-		b.line(end, end + back.rotated(-0.6), Color(col, 0.5), 1.2)
 
 const DARK: Color = Color(0.05, 0.05, 0.06, 0.85)
+const FIREBALL_HOT: Color = Color(1.0, 0.92, 0.6)
+const FIREBALL_MID: Color = Color(1.0, 0.55, 0.12)
+const FIREBALL_COOL: Color = Color(0.55, 0.12, 0.04)
+const SHADOW: Color = Color(0, 0, 0, 0.32)
+## Drones and cruise missiles are drawn this big (their glyphs' own size is 1).
+const WEAPON_SCALE: float = 0.75
 
 func draw_weapon(w: LiteWeapon) -> void:
 	var col: Color = weapon_color(w.side)
 	var ang: float = w.dir.angle()
 	match w.arm:
 		LiteArm.DRONE:
-			LiteGlyphs.draw(_b, LiteGlyph.DRONE, w.pos, 0.85, col, ang, DARK)
+			# It wobbles a little in the wind, and its pusher propeller spins at the tail.
+			var wob: float = sin(_clock * 5.0 + w.id * 1.7) * 0.08
+			var d: Vector2 = w.dir.rotated(wob)
+			var at: Vector2 = w.view_pos()
+			var tail: Vector2 = at - d * 2.4
+			var spin: float = absf(sin(_clock * 37.0 + w.id))
+			var across: Vector2 = Vector2(-d.y, d.x)
+			_b.disc(tail, 2.3, Color(0.9, 0.92, 0.96, 0.1))
+			_b.line(tail + across * 2.3 * spin, tail - across * 2.3 * spin, Color(0.9, 0.92, 0.96, 0.55), 0.8)
+			LiteGlyphs.draw(_b, LiteGlyph.DRONE, at, WEAPON_SCALE, col, ang + wob, DARK)
 		LiteArm.CRUISE:
-
+			# A jet engine: a hot core and a streak of exhaust behind it.
 			var fl: float = 0.8 + 0.2 * sin(_clock * 40.0 + w.pos.x)
-			_b.disc(w.pos - w.dir * 6.5, 2.6 * fl, Color(1.0, 0.65, 0.25, 0.75))
-			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, w.pos, 0.85, col, ang, DARK)
+			var at: Vector2 = w.view_pos()
+			var tail: Vector2 = at - w.dir * 5.4
+			_b.line_grad(tail - w.dir * (8.0 + 4.0 * fl), tail, Color(1.0, 0.55, 0.2, 0.0), Color(1.0, 0.8, 0.5, 0.85), 1.8)
+			_b.disc(tail, 1.7 * fl, Color(1.0, 0.95, 0.8, 0.9))
+			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, at, WEAPON_SCALE, col, ang, DARK)
 		_:
+			draw_ballistic(w, col)
 
-			_b.disc(w.pos, 9.0, Color(1.0, 0.6, 0.3, 0.12 + 0.2 * w.progress))
-			_b.disc(w.pos, 6.0, Color(col, 0.22))
-			LiteGlyphs.draw(_b, LiteGlyph.BALLISTIC, w.pos, 0.9, col.lightened(0.25), 0, DARK)
+## A ballistic missile flies a parabola. Off the launcher on a short, bright
+## burn that leaves smoke; then it coasts, its path behind it a pale trail that
+## fades slowly (see Trace) and the rest of its arc dotted ahead to the target;
+## on the way down the nose heats up and streaks until it meets its shadow.
+func draw_ballistic(w: LiteWeapon, col: Color) -> void:
+	var b: LiteBatch = _b
+	var p: float = w.progress
+	var at: Vector2 = _air(w, p)
+	var dir: Vector2 = _air_dir(w, p)
+	var k: float = clampf(w.altitude() / 140.0, 0.0, 1.0)
+	# Nearer the camera when high up, so a little bigger.
+	var s: float = 1.1 + 0.4 * k
+	# Pale, over a thin dark edge, so the arc reads over any alert colour.
+	var pale: Color = col.lightened(0.55)
+	var ahead: int = maxi(2, int(16.0 * (1.0 - p)))
+	var prev: Vector2 = at
+	for j: int in range(1, ahead + 1):
+		var pt: Vector2 = _air(w, lerpf(p, 1.0, float(j) / ahead))
+		if j % 2 == 0:
+			b.line(prev, pt, Color(0, 0, 0, 0.14), 2.6)
+			b.line(prev, pt, Color(pale, 0.4), 1.1)
+		prev = pt
+	var nozzle: Vector2 = at - dir * 7.0 * s
+	if p < BURN:
+		# The motor: brightest at lift-off, burning out as it climbs.
+		var r: float = 1.0 - p / BURN
+		var fl: float = 0.75 + 0.25 * sin(_clock * 47.0 + w.start.x)
+		b.disc(nozzle - dir * 6.0 * s, (6.0 + 9.0 * r) * s * fl, Color(1.0, 0.45, 0.12, 0.18 + 0.25 * r))
+		b.line_grad(nozzle - dir * (8.0 + 18.0 * r * fl) * s, nozzle, Color(1.0, 0.5, 0.15, 0.0), Color(1.0, 0.78, 0.4, 0.95), (2.4 + 2.6 * r) * s)
+		b.line(nozzle, nozzle - dir * (4.0 + 6.0 * r * fl) * s, Color(1.0, 0.97, 0.85, 0.95), (1.2 + 1.2 * r) * s)
+		b.disc(nozzle - dir * 1.2 * s, (2.2 + 1.2 * r) * s, Color(1.0, 0.97, 0.88, 0.95))
+	elif p > 0.62:
+		# Coming down: the nose heats up, glows and streaks, brighter to the end.
+		var r: float = (p - 0.62) / 0.38
+		b.line_grad(at - dir * (12.0 + 30.0 * r), at, Color(1.0, 0.55, 0.25, 0.0), Color(1.0, 0.82, 0.6, 0.8 * r), 1.5 + 2.0 * r)
+		b.disc(at + dir * 5.0 * s, 3.0 + 6.0 * r, Color(1.0, 0.55, 0.25, 0.12 + 0.25 * r))
+		b.disc(at + dir * 5.0 * s, 1.5 + 2.0 * r, Color(1.0, 0.92, 0.75, 0.3 + 0.5 * r))
+	LiteGlyphs.missile(b, at, s, col.lightened(0.35), dir.angle(), DARK)
 
+## A SAM in flight: a small white missile on a burning motor; its smoke is
+## its trail (see Trace). Its shadow runs along the ground below it.
 func draw_interceptor(i: LiteInterceptor) -> void:
-	var trail: PackedVector2Array = i.trail
-	var n: int = trail.size()
-	for k: int in n:
-		var to: Vector2 = trail[k + 1] if k + 1 < n else i.pos
-		_b.line_grad(trail[k], to, Color(1, 1, 1, 0.5 * (k + 1) / (n + 1)), Color(1, 1, 1, 0.5 * (k + 2) / (n + 1)), 1.2)
-	_b.disc(i.pos, 1.8, Color.WHITE)
+	var f: float = sam_frac(i)
+	_b.disc(sam_shadow(i, f), 1.4, Color(0, 0, 0, 0.3))
+	var head: Vector2 = sam_point(i, f)
+	var dir: Vector2 = sam_dir(i, f)
+	# The motor burns hardest on the climb.
+	var hard: float = 1.4 if f < SAM_CLIMB else 1.0
+	var fl: float = 0.75 + 0.25 * sin(_clock * 53.0 + i.age * 31.0)
+	var nozzle: Vector2 = head - dir * 3.3
+	_b.disc(nozzle - dir * 2.0, 3.4 * fl * hard, Color(1.0, 0.5, 0.15, 0.4))
+	_b.line(nozzle, nozzle - dir * (5.0 + 4.0 * fl) * hard, Color(1.0, 0.75, 0.35, 0.85), 2.0 * hard)
+	LiteGlyphs.missile(_b, head, 0.55, Color(0.94, 0.95, 0.98), dir.angle(), DARK)
+	_b.disc(nozzle, 1.3, Color(1.0, 0.97, 0.85))
 
 func draw_fx(f: LiteFx) -> void:
 	var b: LiteBatch = _b
@@ -300,16 +642,43 @@ func draw_fx(f: LiteFx) -> void:
 	match f.kind:
 		LiteFxKind.BLAST:
 			var grow: float = 1 - inv * inv
-			b.disc(f.a, f.size * (0.35 + 0.65 * grow), Color(1.0, 0.72, 0.32, 0.85 * inv * inv))
-			b.disc(f.a, maxf(0.2, f.size * 0.3 * inv), Color(1.0, 0.95, 0.8, inv))
-			b.ring(f.a, f.size * (0.5 + 1.1 * grow), Color(1.0, 0.6, 0.3, 0.7 * inv), 1.5)
+			if f.size >= 20.0:
+				# A ballistic warhead: the ground lights up wide round it.
+				b.puff(f.a, f.size * (1.6 + 2.2 * grow), Color(1.0, 0.55, 0.25, 0.3 * inv * inv))
+			# The fireball: a cluster of billows swelling and rising, lit on
+			# top and sooty underneath, white-hot at first, then orange, then
+			# dull red as it burns out, a hot core fading inside it.
+			var heat: Color = FIREBALL_HOT.lerp(FIREBALL_MID, t / 0.3) if t < 0.3 else FIREBALL_MID.lerp(FIREBALL_COOL, (t - 0.3) / 0.7)
+			var lit:= Color(heat, 0.95 * pow(inv, 0.7))
+			var dark:= Color(heat.darkened(0.55), lit.a * 0.9)
+			var ball: Vector2 = f.a + LIFT * f.size * 0.4 * grow
+			var r: float = f.size * (0.35 + 0.55 * grow)
+			for j: int in 5:
+				var off: Vector2 = Vector2.from_angle(j * TAU / 5.0 + f.a.x * 0.13) * r * (0.35 + 0.25 * grow) + LIFT * r * 0.3 * (j % 2)
+				b.puff_lit(ball + off, r * (0.8 - 0.07 * j), lit, dark, LiteParticles.LIGHT)
+			b.puff(ball, maxf(0.5, f.size * 0.6 * inv * inv), Color(1.0, 0.96, 0.8, inv))
 		LiteFxKind.POP:
-			b.disc(f.a, 1.5 + f.size * t, Color(1.0, 0.95, 0.7, 0.9 * inv))
-			b.ring(f.a, 2 + f.size * 1.6 * t, Color(1, 1, 1, 0.6 * inv), 1.2)
+			# A flash that glints for a moment, and its shockwave.
+			var at: Vector2 = f.a + f.b
+			var g: float = maxf(0.0, 1.0 - t * 3.0)
+			if g > 0.0:
+				var l: float = f.size * 3.2 * g
+				b.line_grad(at - Vector2(l, 0), at, Color(1, 1, 1, 0), Color(1, 0.98, 0.9, 0.9 * g), 1.4)
+				b.line_grad(at + Vector2(l, 0), at, Color(1, 1, 1, 0), Color(1, 0.98, 0.9, 0.9 * g), 1.4)
+				b.line_grad(at - Vector2(0, l * 0.7), at, Color(1, 1, 1, 0), Color(1, 0.98, 0.9, 0.8 * g), 1.2)
+				b.line_grad(at + Vector2(0, l * 0.7), at, Color(1, 1, 1, 0), Color(1, 0.98, 0.9, 0.8 * g), 1.2)
+			b.ring(at, 2 + f.size * 1.8 * t, Color(1, 0.95, 0.85, 0.5 * inv * inv), 1.0)
 		LiteFxKind.PUFF:
-			b.disc(f.a, 2 + f.size * t, Color(0.75, 0.77, 0.8, 0.45 * inv))
+			b.disc(f.a + f.b, 2 + f.size * t, Color(0.75, 0.77, 0.8, 0.45 * inv))
 		LiteFxKind.TRACER:
-			b.line(f.a, f.b, Color(1.0, 0.88, 0.5, 0.8 * inv), 1.0)
+			# A burst of rounds flying out from the gun, a flash at the muzzle,
+			# a spark where they reach.
+			var d: Vector2 = f.b - f.a
+			b.line(f.a + d * clampf(t * 1.4 - 0.4, 0.0, 1.0), f.a + d * clampf(t * 1.4, 0.0, 1.0), Color(1.0, 0.9, 0.55, 0.95), 1.3)
+			if t < 0.35:
+				b.disc(f.a + d.normalized() * 3.0, 2.4 * (1.0 - t / 0.35), Color(1.0, 0.85, 0.5, 0.85))
+			if t > 0.75:
+				b.disc(f.b, 1.6, Color(1.0, 0.9, 0.6, (t - 0.75) * 3.0))
 		LiteFxKind.LAUNCH:
 			b.ring(f.a, 2 + 9 * t, Color(LiteGlyphs.side_color(f.side), 0.6 * inv), 1.3)
 
