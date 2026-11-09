@@ -3,8 +3,9 @@ shader_type canvas_item;
 // The lite map: `ids` holds one region id per texel (255 = sea), the
 // palette row 0 the colour each region shows now and row 1 its country.
 // Fills are flat; a border is drawn wherever a neighbouring texel belongs to
-// another region, in a darker shade of the two fills, a touch heavier on the
-// frontier between the two countries. The coast fades out over one texel.
+// another region, in a darker shade of the two fills. The frontier between
+// the two countries is an even dark line over that, soft at its sides. The
+// coast fades out over one texel.
 uniform sampler2D ids : filter_nearest;
 uniform sampler2D palette : filter_nearest;
 
@@ -23,31 +24,34 @@ void fragment() {
 		vec3 fill = texelFetch(palette, ivec2(c, 0), 0).rgb;
 		float side = texelFetch(palette, ivec2(c, 1), 0).r;
 		vec3 other = fill;
-		float diff = 0.0, frontier = 0.0, water = 0.0;
-		for (int dy = -1; dy <= 1; dy++) {
-			for (int dx = -1; dx <= 1; dx++) {
+		float diff = 0.0, water = 0.0;
+		// How far the frontier is, in texels: the nearest texel of the other
+		// country within two, less half a texel to the edge between them.
+		float near = 9.0;
+		for (int dy = -2; dy <= 2; dy++) {
+			for (int dx = -2; dx <= 2; dx++) {
 				if (dx == 0 && dy == 0) continue;
+				bool inner = abs(dx) <= 1 && abs(dy) <= 1;
 				int n = id_at(p + ivec2(dx, dy), size);
-				if (n == 255) { water += 1.0; continue; }
-				if (n != c) {
+				if (n == 255) {
+					if (inner) water += 1.0;
+					continue;
+				}
+				if (n == c) continue;
+				if (inner) {
 					diff += 1.0;
 					other = min(other, texelFetch(palette, ivec2(n, 0), 0).rgb);
-					if (abs(texelFetch(palette, ivec2(n, 1), 0).r - side) > 0.5) frontier += 1.0;
 				}
-			}
-		}
-		// The frontier is drawn two texels wide on each side, so it reads as
-		// one firm line between the countries rather than a hairline.
-		if (frontier == 0.0 && diff == 0.0) {
-			for (int k = 0; k < 8; k++) {
-				ivec2 o = ivec2(k < 3 ? -2 : (k > 4 ? 2 : 0), k == 0 || k == 3 || k == 5 ? -2 : (k == 2 || k == 4 || k == 7 ? 2 : 0));
-				int n = id_at(p + o, size);
-				if (n != 255 && n != c && abs(texelFetch(palette, ivec2(n, 1), 0).r - side) > 0.5) frontier += 0.75;
+				if (abs(texelFetch(palette, ivec2(n, 1), 0).r - side) > 0.5)
+					near = min(near, length(vec2(float(dx), float(dy))) - 0.5);
 			}
 		}
 		vec3 border = min(fill, other) * 0.62;
 		vec3 col = mix(fill, border, clamp(diff / 3.0, 0.0, 1.0));
-		col = mix(col, vec3(0.07, 0.07, 0.08), clamp(frontier / 3.0, 0.0, 1.0) * 0.55);
+		// The frontier: one even line about three texels wide, centred on the
+		// edge between the countries and soft at its sides, whatever its angle.
+		float line = 1.0 - smoothstep(0.55, 1.85, near);
+		col = mix(col, vec3(0.07, 0.07, 0.08), line * 0.6);
 		COLOR = vec4(col, 1.0 - water / 8.0 * 0.75);
 	}
 }
