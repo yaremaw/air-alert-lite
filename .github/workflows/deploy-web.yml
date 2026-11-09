@@ -1,0 +1,76 @@
+# Builds the web version with Godot and deploys it to Vercel
+# (https://air-alert-beta.vercel.app) on every push to main.
+# Needs one repository secret: VERCEL_TOKEN.
+name: Deploy web build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: "4.7.2"
+  VERCEL_ORG_ID: team_w5D1bSHHn6V5et9QUAyl4RCs
+  VERCEL_PROJECT_ID: prj_WzxhHt00Ok4fmN1PtNCJMb7Z0roN
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot and the web export template
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-web-nothreads
+
+      - name: Install Godot and the web export template
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          templates="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p ~/godot "$templates"
+          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot
+          mv ~/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64 ~/godot/godot
+          # The template bundle holds every platform; keep only the web one.
+          curl -fsSL -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q -j /tmp/templates.tpz templates/web_nothreads_release.zip templates/version.txt -d "$templates"
+          rm /tmp/templates.tpz
+
+      - name: Export the web build
+        run: |
+          mkdir -p build/web
+          ~/godot/godot --headless --path . --import || true
+          ~/godot/godot --headless --path . --export-release "Web" build/web/index.html
+          test -s build/web/index.pck
+          cat > build/web/vercel.json <<'EOF'
+          {
+            "headers": [
+              { "source": "/(.*)\\.(wasm|pck)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=3600" }] }
+            ]
+          }
+          EOF
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::error::The VERCEL_TOKEN repository secret is not set."
+            exit 1
+          fi
+          # Deploy from outside the git checkout: with no commit metadata the
+          # deploy belongs to the token's owner, which a Hobby (free) Vercel
+          # team needs, since it does not allow other commit authors.
+          cp -R build/web "$RUNNER_TEMP/site"
+          cd "$RUNNER_TEMP/site"
+          npx --yes vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN"
