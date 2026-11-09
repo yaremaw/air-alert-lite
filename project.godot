@@ -18,6 +18,10 @@ boot_splash/bg_color=Color(0.08627451, 0.09411765, 0.11372549, 1)
 boot_splash/image="res://assets/ui/splash.png"
 config/icon="res://assets/ui/icon.png"
 
+[compression]
+
+formats/zstd/compression_level=19
+
 [display]
 
 window/size/viewport_width=1280

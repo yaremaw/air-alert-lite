@@ -182,6 +182,43 @@ static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: 
 			b.disc(hub, 2.6 * s, col)
 		LiteGlyph.BALLISTIC: missile(b, c, s, col, angle, outline, rim)
 
+## A glyph as a mesh, for drawing many of it at once (a MultiMesh): its fill
+## white (each copy's colour tints it), edged when `edge` is given with a band
+## `band` units wide and a soft fringe beyond, both in screen units at `scale`.
+static func mesh(pts: PackedVector2Array, scale: float, edge: Variant = null, band: float = 1.1) -> ArrayMesh:
+	var v:= PackedVector2Array()
+	var c:= PackedColorArray()
+	var idx:= PackedInt32Array()
+	var n: int = pts.size()
+	if edge != null:
+		var e: Color = edge
+		var mit: PackedVector2Array = LiteBatch._miter(pts)
+		for r: int in 3:
+			var off: float = 0.0 if r == 0 else (band if r == 1 else band + LiteBatch.FEATHER) / scale
+			for i: int in n:
+				v.append(pts[i] + mit[i] * off)
+				c.append(Color(e, 0.0) if r == 2 else e)
+		for i: int in n:
+			var j: int = (i + 1) % n
+			for r: int in 2:
+				var a: int = r * n
+				var b: int = a + n
+				idx.append_array([a + i, a + j, b + j, a + i, b + j, b + i])
+	var first: int = v.size()
+	for i: int in n:
+		v.append(pts[i])
+		c.append(Color.WHITE)
+	for t: int in _cut(pts):
+		idx.append(first + t)
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v
+	arrays[Mesh.ARRAY_COLOR] = c
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var m:= ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, Mesh.ARRAY_FLAG_USE_2D_VERTICES)
+	return m
+
 static func poly(ci: CanvasItem, src: PackedVector2Array, c: Vector2, s: float, angle: float, fill: Color, outline: Variant = null) -> void:
 	var pts:= PackedVector2Array()
 	pts.resize(src.size())

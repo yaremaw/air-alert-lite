@@ -124,20 +124,44 @@ func save_baked(path: String) -> Error:
 			nb.append(k)
 		regs.append({"side": r.side, "area": r.area, "name": r.name, "city": r.city, "parent": r.parent,
 			"label": r.label, "center": r.center, "spots": PackedVector2Array(r.spots), "neighbors": nb})
-	var f: FileAccess = FileAccess.open_compressed(path, FileAccess.WRITE, FileAccess.COMPRESSION_ZSTD)
+	# The whole map compressed as one piece (Godot's own compressed files
+	# work in 4 KB blocks, which come out more than twice the size).
+	var raw: PackedByteArray = var_to_bytes({"seed": seed, "ids": ids, "capital": capital, "capital_name": capital_name,
+		"land_rect": land_rect, "regions": regs})
+	var f: FileAccess = FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
-	f.store_var({"seed": seed, "ids": ids, "capital": capital, "capital_name": capital_name,
-		"land_rect": land_rect, "regions": regs})
+	f.store_buffer(MAGIC)
+	f.store_32(raw.size())
+	f.store_buffer(raw.compress(FileAccess.COMPRESSION_ZSTD))
 	f.close()
 	return OK
 
-static func load_baked(index: int) -> LiteMap:
-	var f: FileAccess = FileAccess.open_compressed(BAKED_DIR + "map_%03d.bin" % index, FileAccess.READ, FileAccess.COMPRESSION_ZSTD)
+const MAGIC: PackedByteArray = [0x53, 0x41, 0x4d, 0x31]
+
+## A baked map's contents, from either file format.
+static func _read_baked(path: String) -> Variant:
+	var f: FileAccess = FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return null
-	var d: Dictionary = f.get_var()
+	if f.get_buffer(4) == MAGIC:
+		var size: int = f.get_32()
+		var raw: PackedByteArray = f.get_buffer(f.get_length() - 8).decompress(size, FileAccess.COMPRESSION_ZSTD)
+		f.close()
+		return bytes_to_var(raw)
 	f.close()
+	f = FileAccess.open_compressed(path, FileAccess.READ, FileAccess.COMPRESSION_ZSTD)
+	if f == null:
+		return null
+	var d: Variant = f.get_var()
+	f.close()
+	return d
+
+static func load_baked(index: int) -> LiteMap:
+	var got: Variant = _read_baked(BAKED_DIR + "map_%03d.bin" % index)
+	if not got is Dictionary:
+		return null
+	var d: Dictionary = got
 	var m:= LiteMap.new(int(d["seed"]))
 	m.ids = d["ids"]
 	m.capital = d["capital"]

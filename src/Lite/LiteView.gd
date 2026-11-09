@@ -89,6 +89,114 @@ func build() -> void:
 	labels.map = map_
 	labels.show_behind_parent = true
 	add_child(labels)
+	# Air defence ranges change only when a site is built, lost or spotted:
+	# drawn on a layer of their own, over the map, and redrawn only then.
+	_ranges = Node2D.new()
+	_ranges.show_behind_parent = true
+	_ranges.draw.connect(_draw_ranges)
+	add_child(_ranges)
+	# Drones and cruise missiles, and their shadows, are drawn many at a time
+	# from one mesh each (see _fill_flock); shadows under everything else on
+	# the map, the weapons over the trails and buildings. Above them a layer
+	# for what flies or burns over the weapons: interceptors, blasts, fire.
+	for k: int in 4:
+		var mm:= MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_2D
+		mm.use_colors = true
+		# Its bounds are never worked out again when its buffer is replaced
+		# whole: a fixed box round the map, so it is never culled.
+		mm.custom_aabb = AABB(Vector3(-500, -500, -1), Vector3(LiteMap.W + 1000, LiteMap.H + 1000, 2))
+		var pts: PackedVector2Array = LiteGlyphs.DRONE_PTS if k % 2 == 0 else LiteGlyphs.CRUISE_PTS
+		mm.mesh = LiteGlyphs.mesh(pts, WEAPON_SCALE, DARK if k < 2 else null)
+		var node:= MultiMeshInstance2D.new()
+		node.multimesh = mm
+		node.show_behind_parent = k >= 2
+		add_child(node)
+		_flock.append(mm)
+		_flock_buf.append(PackedFloat32Array())
+	_top = Node2D.new()
+	_top.draw.connect(_draw_top)
+	add_child(_top)
+
+## Drones (0) and cruise missiles (1), then their shadows (2, 3).
+var _flock: Array[MultiMesh] = []
+var _flock_buf: Array[PackedFloat32Array] = []
+var _flock_n: PackedInt32Array = PackedInt32Array([0, 0, 0, 0])
+var _top: Node2D = null
+var _top_b: LiteBatch = LiteBatch.new()
+
+## One copy of a weapon's glyph in its MultiMesh: where, which way, what colour.
+func _put(k: int, at: Vector2, ang: float, col: Color) -> void:
+	var n: int = _flock_n[k]
+	var mm: MultiMesh = _flock[k]
+	if n >= mm.instance_count:
+		mm.instance_count = maxi(64, mm.instance_count * 2)
+		_flock_buf[k].resize(mm.instance_count * 12)
+	var buf: PackedFloat32Array = _flock_buf[k]
+	var cs: float = cos(ang) * WEAPON_SCALE
+	var sn: float = sin(ang) * WEAPON_SCALE
+	var i: int = n * 12
+	buf[i] = cs
+	buf[i + 1] = -sn
+	buf[i + 2] = 0.0
+	buf[i + 3] = at.x
+	buf[i + 4] = sn
+	buf[i + 5] = cs
+	buf[i + 6] = 0.0
+	buf[i + 7] = at.y
+	buf[i + 8] = col.r
+	buf[i + 9] = col.g
+	buf[i + 10] = col.b
+	buf[i + 11] = col.a
+	_flock_n[k] = n + 1
+
+## Fills the MultiMeshes with this frame's drones and cruise missiles.
+func _fill_flock() -> void:
+	_flock_n.fill(0)
+	for w: LiteWeapon in sim.weapons:
+		if w.arm == LiteArm.BALLISTIC or not shown_weapon(w):
+			continue
+		var at: Vector2 = w.view_pos()
+		var ang: float = w.dir.angle()
+		if w.arm == LiteArm.DRONE:
+			# It wobbles a little in the wind.
+			_put(0, at, ang + sin(_clock * 5.0 + w.id * 1.7) * 0.08, weapon_color(w.side))
+			_put(2, at - LIFT * 5.0, ang, SHADOW)
+		else:
+			_put(1, at, ang, weapon_color(w.side))
+			_put(3, at - LIFT * 4.0, ang, SHADOW)
+	for k: int in 4:
+		var mm: MultiMesh = _flock[k]
+		if mm.instance_count > 0:
+			RenderingServer.multimesh_set_buffer(mm.get_rid(), _flock_buf[k])
+		mm.visible_instance_count = _flock_n[k]
+
+## The ranges layer, and what it shows (see _ranges_key).
+var _ranges: Node2D = null
+var _ranges_b: LiteBatch = LiteBatch.new()
+var _ranges_at: int = -1
+
+func _ranges_key() -> int:
+	if not LiteSettings.ranges:
+		return 0
+	var key: int = 1
+	for s: LiteBuilding in sim.buildings:
+		if s.alive and (s.is_ad or s.is_gun) and s.ready and shown(s):
+			key = (key * 31 + s.id) % 1000000007
+	return key
+
+func _draw_ranges() -> void:
+	var b: LiteBatch = _ranges_b
+	b.begin(_ranges)
+	if LiteSettings.ranges:
+		for s: LiteBuilding in sim.buildings:
+			if not s.alive or not (s.is_ad or s.is_gun) or not s.ready or not shown(s):
+				continue
+			var col: Color = LiteGlyphs.side_color(s.side)
+			var r: float = LiteRules.range(s.kind)
+			b.disc(s.pos, r, Color(col, 0.035), false)
+			b.ring(s.pos, r, Color(col, 0.16), 1.0)
+	b.flush()
 
 func target(i: int) -> Color:
 	var sim_: LiteSim = main.sim
@@ -118,6 +226,7 @@ func _process(delta: float) -> void:
 	_particles(dt)
 	_update_traces()
 	queue_redraw()
+	_top.queue_redraw()
 
 func _update_traces() -> void:
 	var sim_: LiteSim = main.sim
@@ -141,9 +250,9 @@ func _update_traces() -> void:
 				var k: float = 1.0 - smoothstep(BURN * 0.55, BURN * 1.5, p)
 				_feed(w, _air(w, p), k, Color(weapon_color(w.side).lightened(0.55), 0.6), 1.5, 2.5, BALLISTIC_FADE, now, 5.0)
 			LiteArm.CRUISE:
-				_feed(w, w.view_pos() - w.dir * 5.4, 0.0, CRUISE_WAKE, 1.0, 2.5, 3.0, now, 7.0)
+				_feed(w, w.view_pos() - w.dir * 5.4, 0.0, CRUISE_WAKE, 1.0, 2.5, 2.5, now, 14.0)
 			_:
-				_feed(w, w.view_pos() - w.dir * 2.4, 0.0, DRONE_WAKE, 1.0, 2.5, 1.8, now, 5.0)
+				_feed(w, w.view_pos() - w.dir * 2.4, 0.0, DRONE_WAKE, 1.0, 2.5, 1.5, now, 10.0)
 	for owner: Variant in _traces.keys():
 		if not owner.alive:
 			var done: Trace = _traces[owner]
@@ -417,13 +526,17 @@ func draw_all() -> void:
 	b.begin(self)
 
 	if LiteSettings.ranges:
+		var key: int = _ranges_key()
+		if key != _ranges_at:
+			_ranges_at = key
+			_ranges.queue_redraw()
+		# A site firing lights its range up for a moment.
 		for s: LiteBuilding in sim_.buildings:
-			if not s.alive or not (s.is_ad or s.is_gun) or not s.ready or not shown(s):
-				continue
-			var col: Color = LiteGlyphs.side_color(s.side)
-			var r: float = LiteRules.range(s.kind)
-			b.disc(s.pos, r, Color(col, 0.035), false)
-			b.ring(s.pos, r, Color(col, 0.16 + 0.3 * s.fire_flash), 1.0)
+			if s.fire_flash > 0.02 and s.alive and (s.is_ad or s.is_gun) and s.ready and shown(s):
+				b.ring(s.pos, LiteRules.range(s.kind), Color(LiteGlyphs.side_color(s.side), 0.3 * s.fire_flash), 1.0)
+	elif _ranges_at != 0:
+		_ranges_at = 0
+		_ranges.queue_redraw()
 	for f: LiteFx in sim_.fx:
 		if f.kind == LiteFxKind.SCORCH:
 
@@ -447,8 +560,9 @@ func draw_all() -> void:
 		var k: float = w.progress
 		b.ring(w.target, 7 + 20 * (1 - k), Color(col, 0.3 + 0.6 * k), 1.5)
 		b.disc(w.target, 2.0, Color(col, 0.8))
+	_fill_flock()
 	for w: LiteWeapon in sim_.weapons:
-		if shown_weapon(w):
+		if w.arm == LiteArm.BALLISTIC and shown_weapon(w):
 			draw_shadow(w)
 	# One route per salvo, from its lead weapon: the rest fly the same way.
 	_route_raids.clear()
@@ -462,6 +576,17 @@ func draw_all() -> void:
 	for w: LiteWeapon in sim_.weapons:
 		if shown_weapon(w):
 			draw_weapon(w)
+	b.flush()
+
+## The layer over the weapons: interceptors, blasts, fires, the capitals'
+## names and the tool under the mouse.
+func _draw_top() -> void:
+	var sim_: LiteSim = sim
+	var now: float = sim_.time
+	var main_b: LiteBatch = _b
+	_b = _top_b
+	var b: LiteBatch = _b
+	b.begin(_top)
 	for i: LiteInterceptor in sim_.interceptors:
 		if i.alive:
 			draw_interceptor(i)
@@ -475,9 +600,10 @@ func draw_all() -> void:
 			b.puff(Vector2(f.x, f.y), f.w * 1.6, Color(1.0, 0.45, 0.12, 0.28 * clampf(left / 12.0, 0.2, 1.0) * fl))
 	_parts.draw_fire(b, _clock)
 	b.flush()
+	_b = main_b
 	for s: LiteBuilding in sim_.buildings:
 		if s.alive and s.kind == LiteKind.CAPITAL:
-			LiteLabels.draw_label(self, s.pos + Vector2(0, 26), main.map.capital_name[s.side], 12, LiteGlyphs.TEXT)
+			LiteLabels.draw_label(_top, s.pos + Vector2(0, 26), main.map.capital_name[s.side], 12, LiteGlyphs.TEXT)
 	draw_tool()
 
 func draw_building(s: LiteBuilding) -> void:
@@ -554,9 +680,10 @@ const SHADOW: Color = Color(0, 0, 0, 0.32)
 ## Drones and cruise missiles are drawn this big (their glyphs' own size is 1).
 const WEAPON_SCALE: float = 0.75
 
+## What is drawn of a weapon besides its glyph (drones' and cruise missiles'
+## glyphs come from _fill_flock): a drone's propeller, a cruise missile's
+## exhaust, a ballistic missile whole.
 func draw_weapon(w: LiteWeapon) -> void:
-	var col: Color = weapon_color(w.side)
-	var ang: float = w.dir.angle()
 	match w.arm:
 		LiteArm.DRONE:
 			# It wobbles a little in the wind, and its pusher propeller spins at the tail.
@@ -566,9 +693,7 @@ func draw_weapon(w: LiteWeapon) -> void:
 			var tail: Vector2 = at - d * 2.4
 			var spin: float = absf(sin(_clock * 37.0 + w.id))
 			var across: Vector2 = Vector2(-d.y, d.x)
-			_b.disc(tail, 2.3, Color(0.9, 0.92, 0.96, 0.1))
 			_b.line(tail + across * 2.3 * spin, tail - across * 2.3 * spin, Color(0.9, 0.92, 0.96, 0.55), 0.8)
-			LiteGlyphs.draw(_b, LiteGlyph.DRONE, at, WEAPON_SCALE, col, ang + wob, DARK)
 		LiteArm.CRUISE:
 			# A jet engine: a hot core and a streak of exhaust behind it.
 			var fl: float = 0.8 + 0.2 * sin(_clock * 40.0 + w.pos.x)
@@ -576,9 +701,8 @@ func draw_weapon(w: LiteWeapon) -> void:
 			var tail: Vector2 = at - w.dir * 5.4
 			_b.line_grad(tail - w.dir * (8.0 + 4.0 * fl), tail, Color(1.0, 0.55, 0.2, 0.0), Color(1.0, 0.8, 0.5, 0.85), 1.8)
 			_b.disc(tail, 1.7 * fl, Color(1.0, 0.95, 0.8, 0.9))
-			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, at, WEAPON_SCALE, col, ang, DARK)
 		_:
-			draw_ballistic(w, col)
+			draw_ballistic(w, weapon_color(w.side))
 
 ## A ballistic missile flies a parabola. Off the launcher on a short, bright
 ## burn that leaves smoke; then it coasts, its path behind it a pale trail that
@@ -696,18 +820,18 @@ func draw_tool() -> void:
 			var n: int = sim_.slots[r.id]
 			var at: Vector2 = r.label + Vector2(-(n - 1) * 5.0, 13)
 			if n == 0:
-				draw_string(LiteGlyphs.font, r.label + Vector2(-30, 18), "no room", HORIZONTAL_ALIGNMENT_CENTER, 60, 9, LiteGlyphs.FAINT)
+				_top.draw_string(LiteGlyphs.font, r.label + Vector2(-30, 18), "no room", HORIZONTAL_ALIGNMENT_CENTER, 60, 9, LiteGlyphs.FAINT)
 				continue
 			for i: int in n:
 				var c: Vector2 = at + Vector2(i * 10.0, 0)
 				var box: Rect2 = Rect2(c - Vector2(3.5, 3.5), Vector2(7, 7))
 				if i < f:
-					draw_rect(box, LiteGlyphs.OURS)
+					_top.draw_rect(box, LiteGlyphs.OURS)
 				elif i < f + ru:
-					draw_rect(box, LiteGlyphs.MUTED, false, 1.2)
-					draw_line(box.position, box.end, LiteGlyphs.MUTED, 1.2, true)
+					_top.draw_rect(box, LiteGlyphs.MUTED, false, 1.2)
+					_top.draw_line(box.position, box.end, LiteGlyphs.MUTED, 1.2, true)
 				else:
-					draw_rect(box, LiteGlyphs.GOOD, false, 1.4)
+					_top.draw_rect(box, LiteGlyphs.GOOD, false, 1.4)
 		return
 	if main.build_tool != null:
 		var k: int = main.build_tool
@@ -715,11 +839,11 @@ func draw_tool() -> void:
 		var col: Color = LiteGlyphs.OURS if ok else LiteGlyphs.ENEMY
 		if k != LiteKind.FACTORY:
 			var r: float = LiteRules.range(k)
-			draw_circle(p, r, Color(col, 0.08))
-			draw_arc(p, r, 0, TAU, 72, Color(col, 0.55), 1.2, true)
-		draw_circle(p, 8, Color(LiteGlyphs.PAGE, 0.85), true, -1, true)
-		draw_arc(p, 8, 0, TAU, 36, col, 1.6, true)
-		LiteGlyphs.draw_ci(self, LiteGlyphs.of(k), p, 0.95, Color(1, 1, 1, 0.85))
+			_top.draw_circle(p, r, Color(col, 0.08))
+			_top.draw_arc(p, r, 0, TAU, 72, Color(col, 0.55), 1.2, true)
+		_top.draw_circle(p, 8, Color(LiteGlyphs.PAGE, 0.85), true, -1, true)
+		_top.draw_arc(p, 8, 0, TAU, 36, col, 1.6, true)
+		LiteGlyphs.draw_ci(_top, LiteGlyphs.of(k), p, 0.95, Color(1, 1, 1, 0.85))
 	elif main.strike_tool != null:
 		var a: int = main.strike_tool
 		var at: Vector2 = main.strike_target
@@ -732,19 +856,19 @@ func draw_tool() -> void:
 			var line: Color = Color(LiteGlyphs.YELLOW, 0.85)
 			var i: int = 0
 			while i + 1 < pts.size():
-				draw_dashed_line(pts[i], pts[i + 1], line, 1.6, 6.0, true, true)
+				_top.draw_dashed_line(pts[i], pts[i + 1], line, 1.6, 6.0, true, true)
 				i += 1
-			draw_circle(pts[0], 3.0, line, true, -1, true)
+			_top.draw_circle(pts[0], 3.0, line, true, -1, true)
 		var col: Color = LiteGlyphs.YELLOW if ok else LiteGlyphs.MUTED
 		var r: float = LiteRules.blast(a) + LiteRules.scatter(a)
-		draw_arc(at, r, 0, TAU, 48, col, 1.4, true)
+		_top.draw_arc(at, r, 0, TAU, 48, col, 1.4, true)
 		for i: int in 4:
 			var d: Vector2 = Vector2(1, 0).rotated(i * PI / 2)
-			draw_line(at + d * (r - 4), at + d * (r + 5), col, 1.4, true)
+			_top.draw_line(at + d * (r - 4), at + d * (r + 5), col, 1.4, true)
 		if main.strike_snap != null:
-			draw_arc(at, 12, 0, TAU, 32, Color.WHITE, 1.2, true)
+			_top.draw_arc(at, 12, 0, TAU, 32, Color.WHITE, 1.2, true)
 		if ok:
 			var s: String = "%d× %s · $%d" % [main.salvo, LiteGlyphs.plural(a, main.salvo), LiteRules.cost(a) * main.salvo]
 			var font: Font = LiteGlyphs.bold
-			draw_string_outline(font, at + Vector2(r + 8, 4), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, 4, Color(0, 0, 0, 0.6))
-			draw_string(font, at + Vector2(r + 8, 4), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.TEXT)
+			_top.draw_string_outline(font, at + Vector2(r + 8, 4), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, 4, Color(0, 0, 0, 0.6))
+			_top.draw_string(font, at + Vector2(r + 8, 4), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.TEXT)

@@ -12,7 +12,6 @@ var _unit: PackedVector2Array = PackedVector2Array()
 
 var _circles: Array[PackedVector2Array] = []
 
-var _at: PackedVector2Array = PackedVector2Array()
 var _item: RID = RID()
 
 ## Soft puffs (smoke, fire, flashes) are not built from triangles: each is one
@@ -428,24 +427,79 @@ func rect(r: Rect2, col: Color) -> void:
 
 ## A filled polygon, turned and scaled, edged with `outline` (or a thin soft
 ## edge of its own colour; none at all when `rim` is false, for shadows).
+## The edge is one band round the polygon, pushed out along each corner's
+## mitre (worked out once per shape), with a soft fringe outside it: a few
+## vertices per corner instead of a separate line along every side.
+static var _miters: Dictionary = {}
+
+static func _miter(pts: PackedVector2Array) -> PackedVector2Array:
+	var m: Variant = _miters.get(pts)
+	if m != null:
+		return m
+	var n: int = pts.size()
+	var area: float = 0.0
+	for i: int in n:
+		area += pts[i].cross(pts[(i + 1) % n])
+	var out: float = 1.0 if area > 0.0 else -1.0
+	var res:= PackedVector2Array()
+	res.resize(n)
+	for i: int in n:
+		var e0: Vector2 = (pts[i] - pts[(i + n - 1) % n]).normalized()
+		var e1: Vector2 = (pts[(i + 1) % n] - pts[i]).normalized()
+		var n0: Vector2 = Vector2(e0.y, -e0.x) * out
+		var n1: Vector2 = Vector2(e1.y, -e1.x) * out
+		var mid: Vector2 = (n0 + n1)
+		mid = mid.normalized() if mid.length() > 0.001 else n0
+		# Sharp corners would throw the mitre far out: kept to 2.2 times.
+		res[i] = mid / maxf(0.45, mid.dot(n0))
+	_miters[pts] = res
+	return res
+
 func shape(pts: PackedVector2Array, tris: PackedInt32Array, c: Vector2, s: float, angle: float, fill: Color, outline: Variant = null, rim_on: bool = true) -> void:
 	var count: int = pts.size()
-	_room(count * 9 + 8)
+	_room(count * 4 + 8)
 	var cs: float = cos(angle)
 	var sn: float = sin(angle)
-	if _at.size() < count:
-		_at.resize(count)
+	var k: int = _np
+	var q: int = _ni
+	if rim_on:
+		var rim: Color = outline if outline != null else Color(fill, fill.a * 0.6)
+		var rim0: Color = Color(rim, 0.0)
+		var band: float = 1.1 if outline != null else 0.45
+		var mit: PackedVector2Array = _miter(pts)
+		# Three rings of vertices: the edge, the band's outer edge, the fringe.
+		for i: int in count:
+			var v: Vector2 = pts[i] * s
+			var m: Vector2 = mit[i]
+			var a: Vector2 = v + m * band
+			var f: Vector2 = a + m * FEATHER
+			_p[k + i] = c + Vector2(v.x * cs - v.y * sn, v.x * sn + v.y * cs)
+			_p[k + count + i] = c + Vector2(a.x * cs - a.y * sn, a.x * sn + a.y * cs)
+			_p[k + 2 * count + i] = c + Vector2(f.x * cs - f.y * sn, f.x * sn + f.y * cs)
+			_c[k + i] = rim
+			_c[k + count + i] = rim
+			_c[k + 2 * count + i] = rim0
+		for i: int in count:
+			var j: int = (i + 1) % count
+			for r: int in 2:
+				var a0: int = k + r * count
+				var b0: int = a0 + count
+				_i[q] = a0 + i
+				_i[q + 1] = a0 + j
+				_i[q + 2] = b0 + j
+				_i[q + 3] = a0 + i
+				_i[q + 4] = b0 + j
+				_i[q + 5] = b0 + i
+				q += 6
+		k += 3 * count
+	var first: int = k
 	for i: int in count:
 		var v: Vector2 = pts[i] * s
-		_at[i] = c + Vector2(v.x * cs - v.y * sn, v.x * sn + v.y * cs)
-	var rim: Color = outline if outline != null else Color(fill, fill.a * 0.6)
-	var rim_width: float = 2.2 if outline != null else 0.9
-	if rim_on:
-		for i: int in count:
-			line(_at[i], _at[(i + 1) % count], rim, rim_width)
-	var first: int = _np
-	for i: int in count:
-		_vert(_at[i], fill)
+		_p[k] = c + Vector2(v.x * cs - v.y * sn, v.x * sn + v.y * cs)
+		_c[k] = fill
+		k += 1
 	for t: int in tris:
-		_i[_ni] = first + t
-		_ni += 1
+		_i[q] = first + t
+		q += 1
+	_np = k
+	_ni = q

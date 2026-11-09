@@ -4,7 +4,7 @@ extends RefCounted
 enum { SMOKE, FIRE, EMBER, SPARK, SHOCK, FLASH, FLAME, DEBRIS, HAZE }
 
 ## At most this many at once: fewer in a browser, where every one costs more.
-static var MAX: int = 1000 if OS.has_feature("web") else 1600
+static var MAX: int = 700 if OS.has_feature("web") else 1600
 
 const WIND: Vector2 = Vector2(6.0, -2.5)
 ## Up, on the map as drawn (see LiteView.LIFT): smoke rises this way.

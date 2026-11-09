@@ -14,7 +14,6 @@ var dir: Vector2 = Vector2.ZERO
 var speed: float = 0.0
 var length: float = 0.0
 var flown: float = 0.0
-var trail_acc: float = 0.0
 var alive: bool = true
 
 var aim: LiteBuilding = null
@@ -25,7 +24,6 @@ var crossed: Dictionary = {}
 
 var seen: Array[bool] = [false, false]
 var path: PackedVector2Array = PackedVector2Array()
-var trail: PackedVector2Array = PackedVector2Array()
 
 ## Drones and cruise missiles of one salvo fly side by side, not nose to
 ## tail on one line: each keeps to its own lane, `lane` widths to the side of
@@ -89,9 +87,10 @@ func enter_lane() -> void:
 	off = Vector2(-dir.y, dir.x) * (lane * LANE)
 
 ## Keeps it in its lane through the turns, closing in as it nears its target.
-func steer_lane(dt: float) -> void:
+## `ease` is how far it moves towards its lane this step (0 to 1).
+func steer_lane(ease: float) -> void:
 	if lane == 0.0:
 		return
 	var e: float = minf(1.0, pos.distance_to(target) / 45.0)
 	var want: Vector2 = Vector2(-dir.y, dir.x) * (lane * LANE * e)
-	off = off.lerp(want, 1.0 - exp(-dt * 2.5))
+	off = off.lerp(want, ease)

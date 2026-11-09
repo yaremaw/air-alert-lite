@@ -507,11 +507,12 @@ func build_path(w: LiteWeapon, route: Array[Vector2]) -> void:
 		prev = p
 
 func move_weapons(dt: float) -> void:
+	var ease: float = 1.0 - exp(-dt * 2.5)
 	for w: LiteWeapon in weapons:
 		if not w.alive: continue
 		var move: float = w.speed * dt * (LiteRules.ballistic_pace(w.progress) if w.arm == LiteArm.BALLISTIC else 1.0)
 		w.flown += move
-		w.steer_lane(dt)
+		w.steer_lane(ease)
 		while move > 0 and w.leg < w.path.size():
 			var to: Vector2 = w.path[w.leg] - w.pos
 			var d: float = to.length()
@@ -524,13 +525,6 @@ func move_weapons(dt: float) -> void:
 				w.pos += to / d * move
 				move = 0
 
-		var step: float = 6.0 if w.arm == LiteArm.DRONE else (6.0 if w.arm == LiteArm.CRUISE else 10.0)
-		var keep: int = 26 if w.arm == LiteArm.DRONE else (36 if w.arm == LiteArm.CRUISE else 30)
-		w.trail_acc += w.speed * dt
-		if w.trail_acc >= step:
-			w.trail_acc = 0
-			w.trail.append(w.pos)
-			if w.trail.size() > keep: w.trail.remove_at(0)
 		if w.leg >= w.path.size(): impact(w)
 		elif w.aim != null and not w.aim.alive and w.arm != LiteArm.BALLISTIC: retarget(w)
 
@@ -551,14 +545,22 @@ func retarget(w: LiteWeapon) -> void:
 	w.leg = 0
 	w.length = w.flown + w.pos.distance_to(next.pos)
 
+## Each side's working air defence (its radars), gathered once per look round.
+var _radars: Array[Array] = [[], []]
+
 func detect() -> void:
+	_radars[0].clear()
+	_radars[1].clear()
+	for b: LiteBuilding in buildings:
+		if b.alive and b.is_ad and b.ready:
+			_radars[b.side].append(b)
 	for w: LiteWeapon in weapons:
 		var v: int = 1 - w.side
 		if not w.alive or w.seen[v]: continue
 		var seen: bool = map.side_at(w.pos) == v
 		if not seen:
-			for b: LiteBuilding in buildings:
-				if b.alive and b.side == v and b.is_ad and b.ready and b.pos.distance_to(w.pos) < LiteRules.range(b.kind) * 1.5:
+			for b: LiteBuilding in _radars[v]:
+				if b.pos.distance_to(w.pos) < LiteRules.range(b.kind) * 1.5:
 					seen = true
 					break
 		if not seen: continue
@@ -655,7 +657,10 @@ func air_defence(dt: float) -> void:
 			if score > best_score:
 				best_score = score
 				best = w
-		if best == null: continue
+		# Nothing in range: look again in a tenth of a second, not every step.
+		if best == null:
+			b.cool = 0.1
+			continue
 		if b.is_gun:
 			b.cool = LiteRules.GUN_INTERVAL * (0.5 if b.kind == LiteKind.CAPITAL else 1.0)
 			var aim: Vector2 = best.pos + Vector2(_rng.randf() * 6 - 3, _rng.randf() * 6 - 3)
@@ -690,8 +695,6 @@ func move_interceptors(dt: float) -> void:
 		var to: Vector2 = i.goal - i.pos
 		var step: float = LiteRules.INTERCEPTOR_SPEED * LiteRules.sam_pace(i.age) * dt
 		var d: float = to.length()
-		i.trail.append(i.pos)
-		if i.trail.size() > 8: i.trail.remove_at(0)
 		if d > step + 3 and i.age < 4.0:
 			i.pos += to / d * step
 			continue
@@ -702,18 +705,31 @@ func move_interceptors(dt: float) -> void:
 			if i.target.alive: i.target.engaged -= 1
 			fx.append(LiteFx.new(LiteFxKind.PUFF, i.pos, i.target.lift_vec() + i.target.off, 0, 0.45, 4, i.side))
 
+## Sites each side has not found yet, gathered once per look round.
+var _hidden: Array[Array] = [[], []]
+
 func reveal() -> void:
+	_hidden[0].clear()
+	_hidden[1].clear()
+	for b: LiteBuilding in buildings:
+		if b.alive and not b.seen[1 - b.side]:
+			_hidden[1 - b.side].append(b)
+	if _hidden[0].is_empty() and _hidden[1].is_empty():
+		return
 	for w: LiteWeapon in weapons:
 		if not w.alive: continue
 		var r: float = LiteRules.spot_radius(w.arm)
 		if r <= 0: continue
-		for b: LiteBuilding in buildings:
-			if b.alive and b.side != w.side and not b.seen[w.side] and b.pos.distance_to(w.pos) < r: spot(b, w.side)
+		for b: LiteBuilding in _hidden[w.side]:
+			if not b.seen[w.side] and b.pos.distance_to(w.pos) < r: spot(b, w.side)
 
 func spot(b: LiteBuilding, viewer: int) -> void:
 	if b.seen[viewer]: return
 	b.seen[viewer] = true
 	events.append(LiteEvent.new(LiteEv.SPOTTED, viewer, b.region, b.pos, 0, b.kind))
+
+## Where round a weapon to look for regions it threatens (times its alert radius).
+const _AROUND: Array[Vector2] = [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1), Vector2(0.7, 0.7), Vector2(-0.7, -0.7)]
 
 func alerts(dt: float) -> void:
 	_threat.fill(false)
@@ -737,12 +753,12 @@ func alerts(dt: float) -> void:
 		var r: float = LiteRules.alert_radius(w.arm)
 		var mis: bool = w.arm == LiteArm.CRUISE
 		mark(w.pos, victim, false, mis)
-		for a: int in 8: mark(w.pos + Vector2(r, 0).rotated(a * PI / 4), victim, false, mis)
+		for o: Vector2 in _AROUND: mark(w.pos + o * r, victim, false, mis)
 		var ahead: float = w.speed * LiteRules.heading(w.arm)
-		var d: float = 15
+		var d: float = 20
 		while d <= ahead:
 			mark(w.pos + w.dir * d, victim, false, mis)
-			d += 15
+			d += 25
 	for r: LiteRegion in map.regions:
 		if r.city:
 			_threat[r.id] = _threat[r.id] or _threat[r.parent]

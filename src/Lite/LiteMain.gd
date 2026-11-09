@@ -62,6 +62,9 @@ func _ready() -> void:
 		if a.begins_with("--lite-maps=") and a.substr(12).is_valid_int():
 			maps = a.substr(12).to_int()
 			LiteMap.use_baked = "--lite-baked" in OS.get_cmdline_user_args()
+		if a == "--lite-repack":
+			repack()
+			return
 		if a.begins_with("--lite-bake=") and a.substr(12).is_valid_int():
 			bake(a.substr(12).to_int())
 			return
@@ -83,6 +86,11 @@ func _ready() -> void:
 	ui.show_menu()
 	if shots != null:
 		run_shots(shots, maps)
+	# The web build's benchmark: open the page with ?bench to play a war on
+	# its own, without sound, and print [perf] lines to the browser console.
+	# (--lite-bench runs the same on the desktop.)
+	if "--lite-bench" in OS.get_cmdline_user_args() or OS.has_feature("web") and str(JavaScriptBridge.eval("location.search")).contains("bench"):
+		run_bench()
 
 ## Writes `n` freshly generated maps to res://maps for the game to load.
 func bake(n: int) -> void:
@@ -92,6 +100,14 @@ func bake(n: int) -> void:
 		var m: LiteMap = LiteMap.generate(1000 + k * 7919)
 		var path: String = LiteMap.BAKED_DIR + "map_%03d.bin" % k
 		print("[bake] %s: %d regions, %d ms, %s" % [path, m.regions.size(), Time.get_ticks_msec() - t0, error_string(m.save_baked(path))])
+	get_tree().quit()
+
+## Saves the baked maps again in the current file format.
+func repack() -> void:
+	for k: int in LiteMap.baked_count():
+		var m: LiteMap = LiteMap.load_baked(k)
+		var path: String = LiteMap.BAKED_DIR + "map_%03d.bin" % k
+		print("[repack] %s: %s" % [path, error_string(m.save_baked(path)) if m != null else "unreadable"])
 	get_tree().quit()
 
 func new_world(seed_: int) -> void:
@@ -666,6 +682,19 @@ func run_shots(dir: String, maps: int) -> void:
 	await stress(dir)
 	get_tree().quit()
 
+func run_bench() -> void:
+	AudioServer.set_bus_mute(0, true)
+	await _wait(0.5)
+	_autoplay = true
+	new_game()
+	speed = 3
+	Engine.time_scale = 4
+	await _until(func() -> bool: return sim.winner >= 0 or sim.time > 150)
+	await stress("")
+	print("[perf] bench done")
+	if not OS.has_feature("web"):
+		get_tree().quit()
+
 func stress(dir: String) -> void:
 	if sim.winner >= 0:
 		print("[perf] the war ended before the stress stage")
@@ -687,7 +716,8 @@ func stress(dir: String) -> void:
 	for i: int in 40:
 		await get_tree().process_frame
 	await measure("crowded sky", 3)
-	await _shot(dir, "5_stress.png")
+	if dir != "":
+		await _shot(dir, "5_stress.png")
 
 func measure(what: String, rounds: int) -> void:
 	for round_: int in rounds:
