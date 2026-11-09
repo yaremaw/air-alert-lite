@@ -108,12 +108,26 @@ const FACTORY_PTS: PackedVector2Array = [
 const SAM_PTS: PackedVector2Array = [
 	Vector2(0, -5.5), Vector2(1.6, -2.5), Vector2(1.6, 2.5), Vector2(3.2, 4.8), Vector2(-3.2, 4.8), Vector2(-1.6, 2.5), Vector2(-1.6, -2.5),
 ]
-const DRONE_PTS: PackedVector2Array = [Vector2(6, 0), Vector2(-4, -5.5), Vector2(-2, 0), Vector2(-4, 5.5)]
-const CRUISE_PTS: PackedVector2Array = [
-	Vector2(7, 0), Vector2(4, -1.3), Vector2(0, -1.3), Vector2(-2, -4.5), Vector2(-3.5, -4.5), Vector2(-2.5, -1.3), Vector2(-6, -1.3),
-	Vector2(-7, -3), Vector2(-7.5, -3), Vector2(-7.5, 3), Vector2(-7, 3), Vector2(-6, 1.3), Vector2(-2.5, 1.3), Vector2(-3.5, 4.5),
-	Vector2(-2, 4.5), Vector2(0, 1.3), Vector2(4, 1.3),
-]
+## The attack drone of the logo (LiteLogo): a narrow nose, a delta wing swept
+## back to the tips, the trailing edge stepping in to the tail. Nose along +x.
+static var DRONE_PTS: PackedVector2Array = _mirror([Vector2(6.6, 0.0), Vector2(5.1, 0.5), Vector2(2.6, 0.8),
+	Vector2(-3.7, 6.2), Vector2(-4.9, 6.2), Vector2(-3.2, 1.4), Vector2(-4.0, 0.7), Vector2(-4.8, 0.0)])
+## A Tomahawk-like cruise missile seen from above: a long round body with a
+## blunt ogive nose, short straight wings a little behind the middle and a
+## cross of small fins at the tail.
+static var CRUISE_PTS: PackedVector2Array = _mirror([Vector2(8.2, 0.0), Vector2(7.6, 0.6), Vector2(6.6, 0.95),
+	Vector2(0.4, 0.95), Vector2(-0.5, 3.9), Vector2(-1.5, 3.9), Vector2(-1.4, 0.95),
+	Vector2(-6.0, 0.95), Vector2(-7.6, 2.8), Vector2(-8.4, 2.8), Vector2(-7.9, 0.95), Vector2(-8.4, 0.0)])
+
+## A shape symmetric about the x axis from its upper half (`half`, nose
+## first, tail last, both on the axis).
+static func _mirror(half: Array[Vector2]) -> PackedVector2Array:
+	var p:= PackedVector2Array()
+	for v: Vector2 in half:
+		p.append(Vector2(v.x, -v.y))
+	for i: int in range(half.size() - 2, 0, -1):
+		p.append(half[i])
+	return p
 static var STAR_PTS: PackedVector2Array = _star()
 
 static func _star() -> PackedVector2Array:
@@ -137,19 +151,14 @@ static func draw_ci(ci: CanvasItem, g: int, c: Vector2, s: float, col: Color, an
 			ci.draw_line(hub, c + Vector2(-2.6, -4.2) * s, col, 1.3 * s, true)
 			ci.draw_line(hub, c + Vector2(2.6, -4.2) * s, col, 1.3 * s, true)
 			ci.draw_circle(hub, 2.6 * s, col, true, -1, true)
-		LiteGlyph.BALLISTIC:
-			if outline != null:
-				ci.draw_circle(c, 3.6 * s, outline, true, -1, true)
-			ci.draw_circle(c, 2.8 * s, col, true, -1, true)
+		LiteGlyph.BALLISTIC: poly(ci, MISSILE_PTS, c, s * 1.05, angle, col, outline)
 
 static var TRIS: Dictionary = {}
 
-## A ballistic missile in flight, nose along +x: a slim body, a pointed nose,
-## four fins at the tail (two seen from above).
-const MISSILE_PTS: PackedVector2Array = [
-	Vector2(7.5, 0), Vector2(5.0, -1.2), Vector2(-4.5, -1.2), Vector2(-6.5, -3.2), Vector2(-7.6, -3.2), Vector2(-7.0, -1.2),
-	Vector2(-7.0, 1.2), Vector2(-7.6, 3.2), Vector2(-6.5, 3.2), Vector2(-4.5, 1.2), Vector2(5.0, 1.2),
-]
+## A ballistic missile, nose along +x: a long pointed nose cone, a straight
+## body, and fins swept back at the tail (two seen from above).
+static var MISSILE_PTS: PackedVector2Array = _mirror([Vector2(8.2, 0.0), Vector2(6.8, 0.75), Vector2(4.6, 1.3),
+	Vector2(-4.6, 1.3), Vector2(-6.8, 3.4), Vector2(-7.9, 3.4), Vector2(-7.0, 1.3), Vector2(-7.6, 0.0)])
 
 static func missile(b: LiteBatch, c: Vector2, s: float, col: Color, angle: float, outline: Variant = null, rim: bool = true) -> void:
 	b.shape(MISSILE_PTS, _cut(MISSILE_PTS), c, s, angle, col, outline, rim)
@@ -171,10 +180,7 @@ static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: 
 			b.line(hub, c + Vector2(-2.6, -4.2) * s, col, 1.3 * s)
 			b.line(hub, c + Vector2(2.6, -4.2) * s, col, 1.3 * s)
 			b.disc(hub, 2.6 * s, col)
-		LiteGlyph.BALLISTIC:
-			if outline != null:
-				b.disc(c, 3.6 * s, outline)
-			b.disc(c, 2.8 * s, col)
+		LiteGlyph.BALLISTIC: missile(b, c, s, col, angle, outline, rim)
 
 static func poly(ci: CanvasItem, src: PackedVector2Array, c: Vector2, s: float, angle: float, fill: Color, outline: Variant = null) -> void:
 	var pts:= PackedVector2Array()

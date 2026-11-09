@@ -2,6 +2,10 @@ class_name LiteRules
 extends RefCounted
 
 const START_MONEY: float = 320.0
+## The war's clock: game minutes per second of play, so a war of a quarter
+## of an hour or so runs for weeks. DAY is one game day, in seconds of play.
+const GAME_MINUTES: float = 30.0
+const DAY: float = 1440.0 / GAME_MINUTES
 const CAPITAL_INCOME: float = 3.0
 const FACTORY_INCOME: float = 4.0
 const ALERT_WORK: float = 0.5

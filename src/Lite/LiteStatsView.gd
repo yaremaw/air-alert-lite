@@ -216,9 +216,9 @@ static func _nice(v: int) -> int:
 			return n
 	return v
 
-## Launches at us, hour by hour, stacked by weapon.
+## Launches at us, day by day, stacked by weapon.
 func _hours(card: Rect2, st: LiteStats) -> void:
-	var c: Rect2 = _card_at(card, "Launches by hour", "Enemy drones and missiles launched at us in each hour of the war")
+	var c: Rect2 = _card_at(card, "Launches by day", "Enemy drones and missiles launched at us on each day of the war")
 	var total: int = st.launched[0] + st.launched[1] + st.launched[2]
 	# Legend along the bottom.
 	var lx: float = c.position.x
@@ -228,7 +228,7 @@ func _hours(card: Rect2, st: LiteStats) -> void:
 		draw_string(LiteGlyphs.font, Vector2(lx + 13, c.end.y), s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.MUTED)
 		lx += LiteGlyphs.font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x + 30
 	var chart:= Rect2(c.position + Vector2(28, 8), c.size - Vector2(28, 52))
-	var hours: int = maxi(1, int(main.sim.time / 60.0) + 1)
+	var hours: int = maxi(1, int(main.sim.time / LiteRules.DAY) + 1)
 	var first: int = maxi(0, hours - 24)
 	var top: int = 1
 	for i: int in range(first, mini(hours, st.hourly.size())):
@@ -255,7 +255,7 @@ func _hours(card: Rect2, st: LiteStats) -> void:
 				draw_rect(Rect2(bx, y - bh, bw, bh), ARM_COLORS[a])
 				y -= bh
 		if n <= 14 or i % 2 == 0:
-			draw_string(LiteGlyphs.font, Vector2(bx - 6, chart.end.y + 16), "%02d" % ((21 + hour) % 24), HORIZONTAL_ALIGNMENT_CENTER, bw + 12, 10, LiteGlyphs.FAINT)
+			draw_string(LiteGlyphs.font, Vector2(bx - 6, chart.end.y + 16), str(main.day_of_month((hour + 0.5) * LiteRules.DAY)), HORIZONTAL_ALIGNMENT_CENTER, bw + 12, 10, LiteGlyphs.FAINT)
 	if total == 0:
 		draw_string(LiteGlyphs.font, chart.get_center() + Vector2(-150, 0), "Nothing launched at us yet.", HORIZONTAL_ALIGNMENT_CENTER, 300, 12, LiteGlyphs.MUTED)
 

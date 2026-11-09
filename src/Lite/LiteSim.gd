@@ -421,12 +421,13 @@ func launch(p: Pending) -> void:
 		# then one each side, further out.
 		var k: int = p.raid.launched % 6
 		w.lane = (0.0 if k == 0 else float((k + 1) / 2) * (1.0 if k % 2 == 1 else -1.0)) + _rng.randf_range(-0.3, 0.3)
+		w.enter_lane()
 	weapons.append(w)
 	p.raid.launched += 1
 	sides[p.side].launched += 1
 	stats.on_launch(w, time)
 	# `size` carries the arm, so the view can give a ballistic launch its own effect.
-	fx.append(LiteFx.new(LiteFxKind.LAUNCH, start, Vector2.ZERO, 0, 0.7, arm, p.side))
+	fx.append(LiteFx.new(LiteFxKind.LAUNCH, start + w.off, Vector2.ZERO, 0, 0.7, arm, p.side))
 	events.append(LiteEvent.new(LiteEv.LAUNCH, p.side, map.region_at(target), start, arm, 0, 0, p.raid))
 
 func origin_near(side: int, at: Vector2) -> Vector2:
@@ -466,8 +467,17 @@ func build_path(w: LiteWeapon, route: Array[Vector2]) -> void:
 	var turns: int = 0
 	if route.size() > 0:
 		var off:= Vector2(_r(-6, 6), _r(-6, 6))
-		for q: Vector2 in route: ctrl.append(q + off)
-		turns = route.size()
+		# Skips turning points next to the launcher or behind it, which would
+		# bend the start of its flight into a hook.
+		var first: int = 0
+		var ahead: Vector2 = w.target - a
+		while first < route.size():
+			var to: Vector2 = route[first] + off - a
+			if to.length() > 40.0 and to.dot(ahead) > 0.0 and to.angle_to(ahead) < 1.2 and to.angle_to(ahead) > -1.2:
+				break
+			first += 1
+		for i: int in range(first, route.size()): ctrl.append(route[i] + off)
+		turns = route.size() - first
 	elif w.arm != LiteArm.BALLISTIC and len > 60:
 		var drone: bool = w.arm == LiteArm.DRONE
 		if drone or _rng.randf() < 0.5:

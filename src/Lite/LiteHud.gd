@@ -198,5 +198,7 @@ func _draw_tooltip() -> void:
 
 static func duration(seconds: float) -> String:
 
-	var m: int = int(seconds)
+	var m: int = int(seconds * LiteRules.GAME_MINUTES / 10.0) * 10
+	if m >= 1440:
+		return "%d d %d h" % [m / 1440, (m % 1440) / 60]
 	return ("%d h %02d min" % [m / 60, m % 60]) if m >= 60 else ("%d min" % m)

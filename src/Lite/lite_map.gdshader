@@ -36,6 +36,15 @@ void fragment() {
 				}
 			}
 		}
+		// The frontier is drawn two texels wide on each side, so it reads as
+		// one firm line between the countries rather than a hairline.
+		if (frontier == 0.0 && diff == 0.0) {
+			for (int k = 0; k < 8; k++) {
+				ivec2 o = ivec2(k < 3 ? -2 : (k > 4 ? 2 : 0), k == 0 || k == 3 || k == 5 ? -2 : (k == 2 || k == 4 || k == 7 ? 2 : 0));
+				int n = id_at(p + o, size);
+				if (n != 255 && n != c && abs(texelFetch(palette, ivec2(n, 1), 0).r - side) > 0.5) frontier += 0.75;
+			}
+		}
 		vec3 border = min(fill, other) * 0.62;
 		vec3 col = mix(fill, border, clamp(diff / 3.0, 0.0, 1.0));
 		col = mix(col, vec3(0.07, 0.07, 0.08), clamp(frontier / 3.0, 0.0, 1.0) * 0.55);

@@ -458,7 +458,7 @@ func post(text: String, tone: Color) -> void:
 	card.add_theme_stylebox_override("panel", box)
 	var vb:= VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 1)
-	vb.add_child(_text(main.clock_text(main.sim.time, false), 10, LiteGlyphs.FAINT))
+	vb.add_child(_text(main.stamp(main.sim.time), 10, LiteGlyphs.FAINT))
 	vb.add_child(_text(text, 12, LiteGlyphs.TEXT))
 	card.add_child(vb)
 	card.modulate = Color(1, 1, 1, 0)

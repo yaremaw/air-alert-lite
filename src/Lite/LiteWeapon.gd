@@ -83,11 +83,15 @@ func setup_arc(bounds: Rect2) -> void:
 	if n.y > 0.001: t = minf(t, (bounds.end.y - mid.y) / n.y)
 	top = maxf(50.0, t)
 
-## Eases it into its lane: out to the side once clear of the launcher, back in
-## as it closes on its target.
+## Puts it in its lane from the moment it is launched, so its trail starts
+## straight instead of swinging out to the side.
+func enter_lane() -> void:
+	off = Vector2(-dir.y, dir.x) * (lane * LANE)
+
+## Keeps it in its lane through the turns, closing in as it nears its target.
 func steer_lane(dt: float) -> void:
 	if lane == 0.0:
 		return
-	var e: float = minf(1.0, flown / 45.0) * minf(1.0, pos.distance_to(target) / 45.0)
+	var e: float = minf(1.0, pos.distance_to(target) / 45.0)
 	var want: Vector2 = Vector2(-dir.y, dir.x) * (lane * LANE * e)
 	off = off.lerp(want, 1.0 - exp(-dt * 2.5))

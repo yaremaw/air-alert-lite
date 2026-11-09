@@ -29,7 +29,7 @@ var land_rect: Rect2 = Rect2(0, 0, W, H)
 ## by noise, more on some maps than others, with bays bitten out of it and now
 ## and then a peninsula. Ours is the near end of it and theirs the far, split
 ## by a frontier that runs from coast to coast, turned a different way on each
-## map: winding, jagged or ruled straight like a surveyed line, sometimes with
+## map: winding, rugged or ruled straight like a surveyed line, sometimes with
 ## a deep wedge driven into one side or the other, sometimes with a river
 ## along part of it. Each country is cut into provinces: the land nearest each
 ## of a scatter of seeds, measured through a noise warp, so their borders wind
@@ -66,6 +66,11 @@ var _river_hi: float = 0.0
 ## How much province borders wind, and how many provinces ours has.
 var _warp_a: float = 24.0
 var _provinces: int = 15
+## The layouts are drawn in a space of their own, then fitted to the map
+## frame: a point `p` on the map is `_dc + (p - MID) / _dk` in it. So a map
+## fills the screen's height as well as its width, whatever its layout.
+var _dc: Vector2 = MID
+var _dk: Vector2 = Vector2.ONE
 ## Land is where `_land` is above this.
 const LAND: float = 0.1
 
@@ -212,6 +217,8 @@ func _build() -> void:
 				if side[i] >= 0 and _river(x + 0.5, y + 0.5):
 					side[i] = -1
 	side = _keep_mainland(side)
+	_one_piece(side)
+	_no_slivers(side)
 	_one_piece(side)
 
 	var to_enemy: Array[PackedFloat32Array] = [
@@ -485,7 +492,8 @@ func _shape(rng: RandomNumberGenerator) -> void:
 				var y: float = clampf(H * 0.5 + (x - W * 0.5) * tilt, 170, H - 170) + _r(rng, -40, 40)
 				_oval(Vector2(x, y), Vector2(_r(rng, 120, 170), _r(rng, 150, 220)), atan(tilt) + _r(rng, -0.4, 0.4))
 			turn = atan(tilt) * 0.8
-	_axis = Vector2.from_angle(turn)
+	_fit(rng)
+	_axis = (Vector2.from_angle(turn) * _dk).normalized()
 	# Now and then a long peninsula reaching out to sea.
 	for k: int in rng.randi_range(0, 2):
 		var b: int = rng.randi_range(0, n - 1)
@@ -508,6 +516,32 @@ func _shape(rng: RandomNumberGenerator) -> void:
 			_cut_c.append(c)
 			_cut_r.append(Vector2(_r(rng, 35, 80), _r(rng, 25, 55)))
 
+## Fits the layout to the frame: stretched towards the frame's own shape
+## (about 1.4 times as wide as tall) but keeping some of its own, from a
+## little taller to a lot wider than that, and filling most of the frame.
+func _fit(rng: RandomNumberGenerator) -> void:
+	var lo:= Vector2(3.4e38, 3.4e38)
+	var hi:= -lo
+	var t: float = LAND - _coast_a * 0.45
+	for y: int in range(-400, H + 400, 8):
+		for x: int in range(-400, W + 400, 8):
+			if _ovals(Vector2(x, y)) > t:
+				lo = lo.min(Vector2(x, y))
+				hi = hi.max(Vector2(x, y))
+	var size: Vector2 = (hi - lo).max(Vector2(50, 50))
+	var room:= Vector2(W - 110, H - 110)
+	var aspect: float = clampf(lerpf(size.x / size.y, room.x / room.y, _r(rng, 0.55, 0.8)), 1.1, 1.75)
+	var want: Vector2 = Vector2(room.x, room.x / aspect) if aspect > room.x / room.y else Vector2(room.y * aspect, room.y)
+	want *= _r(rng, 0.93, 1.0)
+	var k: Vector2 = want / size
+	# Not stretched so far one way that the shapes look pulled out of true.
+	var mean: float = sqrt(k.x * k.y)
+	var r: float = clampf(k.y / k.x, 0.6, 1.7)
+	k = Vector2(mean / sqrt(r), mean * sqrt(r))
+	k *= minf(room.x / (size.x * k.x), room.y / (size.y * k.y))
+	_dk = k
+	_dc = (lo + hi) * 0.5
+
 func _oval(c: Vector2, r: Vector2, a: float) -> void:
 	_blob_c.append(c)
 	_blob_r.append(r)
@@ -523,7 +557,7 @@ func _ovals(p: Vector2) -> float:
 
 ## How far inland a point is: above LAND is land.
 func _land(x: float, y: float) -> float:
-	var p:= Vector2(x, y)
+	var p: Vector2 = _dc + (Vector2(x, y) - MID) / _dk
 	var v: float = _ovals(p) + _coast_a * _coast.get_noise_2d(x, y)
 	for k: int in _cut_c.size():
 		var l: float = ((p - _cut_c[k]) / _cut_r[k]).length_squared()
@@ -556,7 +590,7 @@ static func _fill_lakes(land: PackedByteArray) -> void:
 			land[i] = 1
 
 ## How far the frontier is pushed along the axis at `v` across it, besides
-## `_fx`: the way it leans, its wedge, and its winding, jagged or ruled shape.
+## `_fx`: the way it leans, its wedge, and its winding, rugged or ruled shape.
 func _bend(v: float) -> float:
 	var d: float = (v - _sal_v) / _sal_w
 	var g: float = _slope * v + _sal_a * exp(-d * d)
@@ -564,7 +598,7 @@ func _bend(v: float) -> float:
 		WINDING:
 			g += 80.0 * _front_n.get_noise_1d(v) + 12.0 * _front_n.get_noise_1d(v * 4.0 + 1000.0)
 		JAGGED:
-			g += 50.0 * _front_n.get_noise_1d(v) + 26.0 * _front_n.get_noise_1d(v * 5.0 + 1000.0) + 9.0 * _front_n.get_noise_1d(v * 16.0 + 3000.0)
+			g += 55.0 * _front_n.get_noise_1d(v) + 22.0 * _front_n.get_noise_1d(v * 3.5 + 1000.0)
 		_:
 			# Straight runs between corners, the way borders are drawn with a ruler.
 			var k: int = 0
@@ -654,6 +688,24 @@ func _one_piece(side: PackedInt32Array) -> void:
 				moved = true
 		if not moved:
 			return
+
+## No thin strips of one country squeezed between the other and the sea:
+## any part of a country narrower than SLIVER across that touches the other
+## goes to the other. One country after the other, so the two never swap
+## corners where the frontier meets the coast.
+const SLIVER: float = 8.0
+func _no_slivers(side: PackedInt32Array) -> void:
+	for s: int in 2:
+		var inside: PackedFloat32Array = _chamfer(side, func(v: int) -> bool: return v != s)
+		var core:= PackedFloat32Array()
+		core.resize(W * H)
+		for i: int in W * H:
+			core[i] = 0.0 if side[i] == s and inside[i] >= SLIVER else 1000000000.0
+		var near_core: PackedFloat32Array = _chamfer_passes(core)
+		var other: PackedFloat32Array = _chamfer(side, func(v: int) -> bool: return v == 1 - s)
+		for i: int in W * H:
+			if side[i] == s and near_core[i] > SLIVER + 1.0 and other[i] < SLIVER * 1.5:
+				side[i] = 1 - s
 
 ## Labels the pieces of `v`: cells side by side with the same value (not
 ## below 0). Returns each cell's piece (or -1), and each piece's size and value.

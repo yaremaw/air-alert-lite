@@ -72,7 +72,8 @@ func _draw_body() -> void:
 	draw_style_box(_box, Rect2(Vector2(inset, inset), size - Vector2(inset, inset) * 2))
 	var lift: float = -2.0 * _hover
 	var icon: Color = Color(1, 1, 1, dim).lerp(accent.lightened(0.35), _sel * 0.6)
-	var angle: float = -PI / 4 if glyph == LiteGlyph.DRONE or glyph == LiteGlyph.CRUISE else 0.0
+	# Weapons nose up and to the right, as on the logo; a ballistic missile straight up.
+	var angle: float = -PI / 4 if glyph == LiteGlyph.DRONE or glyph == LiteGlyph.CRUISE else (-PI / 2 if glyph == LiteGlyph.BALLISTIC else 0.0)
 	LiteGlyphs.draw_ci(self, glyph, Vector2(size.x / 2, 24 + lift), 1.55, icon, angle)
 	draw_string(LiteGlyphs.bold, Vector2(0, 50), title, HORIZONTAL_ALIGNMENT_CENTER, size.x, 12, Color(LiteGlyphs.TEXT, dim))
 	draw_string(LiteGlyphs.font, Vector2(0, 64), price, HORIZONTAL_ALIGNMENT_CENTER, size.x, 11, LiteGlyphs.MUTED if affordable else LiteGlyphs.ENEMY)

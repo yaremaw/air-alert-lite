@@ -32,7 +32,10 @@ var _autoplay: bool = false
 var _fake_mouse: Variant = null
 
 
-const ENEMY_INCOME: Array[float] = [0.8, 1.1, 1.3]
+## The enemy's income on Easy, Normal and Hard. Hard was 1.3 until the maps
+## grew more varied (more of them favour the side with more to spend): at
+## 1.15 it wins about two wars in three against our own planner again.
+const ENEMY_INCOME: Array[float] = [0.8, 1.1, 1.15]
 const ENEMY_WAR_SHARE: Array[float] = [0.4, 0.5, 0.55]
 const ENEMY_TEMPO: Array[float] = [1.3, 1.0, 0.85]
 
@@ -112,7 +115,8 @@ func new_world(seed_: int) -> void:
 ## screen left of the panel), centred, never panned or zoomed after.
 func fit_view() -> void:
 	var land: Rect2 = map.land_rect.grow(14)
-	var frame:= Rect2(6, 6, LiteMap.W - 12, LiteMap.H - 12)
+	# A little clear of the top, where the air alert banner sits.
+	var frame:= Rect2(6, 30, LiteMap.W - 12, LiteMap.H - 36)
 	var k: float = minf(minf(frame.size.x / land.size.x, frame.size.y / land.size.y), 1.6)
 	var off: Vector2 = frame.get_center() - land.get_center() * k
 	get_viewport().canvas_transform = Transform2D(0, Vector2(k, k), 0, off)
@@ -186,11 +190,22 @@ func select_strike(a: int) -> void:
 func clock_text(t: float, date: bool) -> String:
 
 	var start: int = Time.get_unix_time_from_datetime_string("2026-10-26T21:00:00")
-	var at: Dictionary = Time.get_datetime_dict_from_unix_time(start + int(floor(t * 60.0)))
+	# To ten minutes: at this pace the minutes would only flicker.
+	var at: Dictionary = Time.get_datetime_dict_from_unix_time(start + int(floor(t * LiteRules.GAME_MINUTES / 10.0)) * 600)
 	var hm: String = "%02d:%02d" % [int(at["hour"]), int(at["minute"])]
 	if not date:
 		return hm
 	return "%d %s %s" % [int(at["day"]), _MONTHS[int(at["month"]) - 1], hm]
+
+## The day and time, short, for the feed: "27 Oct 14:30".
+func stamp(t: float) -> String:
+	var s: String = clock_text(t, true)
+	var parts: PackedStringArray = s.split(" ")
+	return "%s %s %s" % [parts[0], parts[1].substr(0, 3), parts[2]]
+
+## The day of the month `t` seconds into the war.
+func day_of_month(t: float) -> int:
+	return int(clock_text(t, true).split(" ")[0])
 
 func _process(delta: float) -> void:
 	if _fake_mouse != null:
@@ -421,15 +436,13 @@ static func composition(r: LiteRaid) -> String:
 func handle_events() -> void:
 	if sim == null:
 		return
+	# The feed carries only news: a raid's outcome when it was a real one,
+	# hits on the capitals, sites lost or destroyed, ballistic launches and
+	# warnings. Alerts and all-clears show on the map and the banner.
 	for e: LiteEvent in sim.events:
 		match e.type:
-			LiteEv.RAID_ALERT:
-				if e.side != 0:
-					continue
-				ui.post("Air alert in %s. Take cover." % region_name(e.region), LiteGlyphs.YELLOW)
 			LiteEv.ALL_CLEAR:
 				if e.side == 0:
-					ui.post("All clear. The alert lasted %s." % LiteHud.duration(e.value), LiteGlyphs.GOOD)
 					if not _our_alert():
 						audio.siren("all_clear.wav", -10.0)
 			LiteEv.LAUNCH:
@@ -437,13 +450,12 @@ func handle_events() -> void:
 					audio.play("launch.wav", -19.0, 0.15)
 					continue
 				if e.arm == LiteArm.BALLISTIC:
-					ui.post("Ballistic launch! Heading for %s." % region_name(e.region), LiteGlyphs.BALLISTIC_ALERT)
+					# One line per salvo, not per missile.
+					if e.raid == null or not e.raid.reported:
+						if e.raid != null:
+							e.raid.reported = true
+						ui.post("Ballistic launch towards %s." % region_name(e.region), LiteGlyphs.BALLISTIC_ALERT)
 					audio.play("ballistic_warning.wav", -9.0, 4.0, 0.0)
-			LiteEv.DETECTED:
-				if e.side != 1 or e.raid == null or e.raid.reported:
-					continue
-				e.raid.reported = true
-				ui.post("Enemy %s spotted over %s." % [LiteGlyphs.plural(e.arm, 2), region_name(e.region)], LiteGlyphs.YELLOW)
 			LiteEv.SHOT_DOWN:
 				audio.play("intercept.wav", -15.0 if e.side == 0 else -22.0, 0.08)
 			LiteEv.HIT:
@@ -454,16 +466,16 @@ func handle_events() -> void:
 					continue
 				_last_capital_post = sim.time
 				if e.side == 0:
-					ui.post("%s is hit! %d/%d left." % [map.capital_name[0], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.ENEMY)
+					ui.post("%s hit · %d/%d" % [map.capital_name[0], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.ENEMY)
 				else:
-					ui.post("Hit on %s: %d/%d left." % [map.capital_name[1], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.OURS)
+					ui.post("Hit on %s · %d/%d" % [map.capital_name[1], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.OURS)
 			LiteEv.DESTROYED:
 				if e.kind == LiteKind.CAPITAL:
 					continue
 				if e.side == 0:
-					ui.post("Our %s destroyed in %s." % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.ENEMY)
+					ui.post("Lost: our %s in %s" % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.ENEMY)
 				else:
-					ui.post("Enemy %s destroyed in %s." % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.GOOD)
+					ui.post("Destroyed: enemy %s in %s" % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.GOOD)
 				audio.play("wreck.wav", -13.0, 0.2)
 			LiteEv.BUILT:
 				if e.side == 0:
@@ -476,25 +488,26 @@ func handle_events() -> void:
 			LiteEv.WARNING:
 				if e.side != 1:
 					continue
-				ui.post("Intelligence: the enemy is massing drones and missiles for a large strike. Ready the air defence.", LiteGlyphs.BALLISTIC_ALERT)
+				ui.post("Intelligence: a large strike is being prepared.", LiteGlyphs.BALLISTIC_ALERT)
 				if not _our_alert():
 					audio.siren("alert.wav", -9.0)
 			LiteEv.REPORT:
 				var rep: LiteReport = sim.stats.reports[int(e.value)]
-				ui.post("Attack report: %d drones and missiles, %d shot down. Press T for all reports." % [rep.total, rep.total_downed], LiteGlyphs.OURS)
+				ui.post("Attack report: %d launched, %d shot down (T)" % [rep.total, rep.total_downed], LiteGlyphs.OURS)
 			LiteEv.SPOTTED:
 				if e.side == 1 and e.kind == LiteKind.FACTORY:
 					ui.post("The enemy has located our factory in %s." % region_name(e.region), LiteGlyphs.ENEMY)
-				if e.side == 0:
-					ui.post("Spotted: enemy %s in %s." % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.OURS)
+				if e.side == 0 and e.kind == LiteKind.FACTORY:
+					ui.post("Found: enemy factory in %s" % region_name(e.region), LiteGlyphs.OURS)
 			LiteEv.RAID_OVER:
 				var r: LiteRaid = e.raid
 				var hits: String = "%d hit%s" % [r.hits, "" if r.hits == 1 else "s"]
-				if r.side == 1:
-					ui.post("Raid over: %s. %d shot down, %s." % [composition(r), r.down, hits],
+				# Lone scouts and stray drones are not news.
+				if r.side == 1 and (r.total >= 4 or r.hits > 0):
+					ui.post("Enemy raid: %s · %d down, %s" % [composition(r), r.down, hits],
 						LiteGlyphs.GOOD if r.hits == 0 else (LiteGlyphs.ENEMY if r.destroyed.size() > 0 else LiteGlyphs.YELLOW))
-				elif r.total > 1 or r.hits > 0:
-					ui.post("Our strike: %s. %s, %d shot down." % [composition(r), hits, r.down], LiteGlyphs.OURS)
+				elif r.side == 0 and (r.total >= 3 or r.hits > 0):
+					ui.post("Our strike: %s · %s, %d lost" % [composition(r), hits, r.down], LiteGlyphs.OURS)
 			LiteEv.GAME_OVER:
 				_end_timer = 2.0
 				build_tool = null

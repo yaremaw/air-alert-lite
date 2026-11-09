@@ -49,7 +49,7 @@ func setup(map: LiteMap) -> void:
 	crossed.resize(map.regions.size())
 
 func _hour(time: float) -> PackedInt32Array:
-	var h: int = int(time / 60.0)
+	var h: int = int(time / LiteRules.DAY)
 	while hourly.size() <= h:
 		hourly.append(PackedInt32Array([0, 0, 0]))
 	return hourly[h]
@@ -61,7 +61,7 @@ func on_launch(w: LiteWeapon, time: float) -> void:
 	launched[w.arm] += 1
 	var h: PackedInt32Array = _hour(time)
 	h[w.arm] += 1
-	hourly[int(time / 60.0)] = h
+	hourly[int(time / LiteRules.DAY)] = h
 	if _attack == null:
 		_attack = LiteReport.new()
 		_attack.start = time

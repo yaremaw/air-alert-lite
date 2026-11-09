@@ -186,7 +186,9 @@ func attack(s: LiteSim, me: LiteSide) -> void:
 			_targets.append(b)
 			if b.kind != LiteKind.CAPITAL: known += 1
 
-	if known == 0 or _rng.randf() < 0.1: scout(s, mini(4, int(budget / LiteRules.cost(LiteArm.DRONE))))
+	# Nothing found yet: mostly scouting, but now and then the capital, which
+	# is always in plain sight.
+	if (known == 0 and _rng.randf() < 0.55) or _rng.randf() < 0.1: scout(s, mini(4, int(budget / LiteRules.cost(LiteArm.DRONE))))
 	else:
 		var raid: LiteRaid = null
 		var delay: float = 0
@@ -468,6 +470,12 @@ class Option:
 	var value: float
 	var route: Array[Vector2]
 	var travel: float
+	## A second group of another arm in the same raid (-1 for none): the
+	## missiles that go in with the drones.
+	var mix_arm: int = -1
+	var mix_count: int = 0
+	var mix_route: Array[Vector2] = []
+	var mix_travel: float = 0.0
 
 func _cell(p: Vector2) -> int:
 	return clampi(int(p.y / CELL), 0, GH - 1) * GW + clampi(int(p.x / CELL), 0, GW - 1)
@@ -701,10 +709,19 @@ func _value(s: LiteSim, b: LiteBuilding) -> float:
 ## The cheapest way to destroy a site: drones, cruise or ballistic missiles,
 ## enough for the hits it takes after the losses expected on the way in.
 func _option(s: LiteSim, me: LiteSide, b: LiteBuilding) -> Option:
-	# The capital is worn down a chunk at a time.
-	var hp: float = minf(b.hp, 45.0) if b.kind == LiteKind.CAPITAL else b.hp
+	# The capital is worn down a chunk at a time; a bigger one when it has no
+	# air defence round it that we know of.
+	var chunk: float = 45.0
+	if b.kind == LiteKind.CAPITAL:
+		chunk = 80.0
+		for o: LiteBuilding in s.buildings:
+			if o.alive and o.side != side and o.seen[side] and (o.is_ad or o.is_gun) and o.kind != LiteKind.CAPITAL and o.pos.distance_to(b.pos) <= LiteRules.range(o.kind):
+				chunk = 45.0
+				break
+	var hp: float = minf(b.hp, chunk) if b.kind == LiteKind.CAPITAL else b.hp
 	var drone: Option = null
 	var missile: Option = null
+	var by_arm: Array[Option] = [null, null, null]
 	for arm: int in 3:
 		var hits: int = ceili(hp / LiteRules.damage(arm))
 		var route: Array[Vector2] = []
@@ -739,15 +756,47 @@ func _option(s: LiteSim, me: LiteSide, b: LiteBuilding) -> Option:
 		o.cost = count * LiteRules.cost(arm)
 		o.route = route
 		o.travel = _path_length(from, route, b.pos) / LiteRules.mean_speed(arm) * 1.1
+		by_arm[arm] = o
 		if arm == LiteArm.DRONE:
 			drone = o
-		elif missile == null or o.cost < missile.cost:
-			missile = o
+	# The capital and air defence sites are what ballistic missiles are for:
+	# they are preferred there unless they cost far more than cruise missiles.
+	var cru: Option = by_arm[LiteArm.CRUISE]
+	var bal: Option = by_arm[LiteArm.BALLISTIC]
+	missile = cru
+	if bal != null and (missile == null or bal.cost * (0.6 if b.kind == LiteKind.CAPITAL or b.is_ad else 1.0) < missile.cost):
+		missile = bal
+	# And now and then, once the war is under way, ballistic missiles anyway:
+	# the other side never knows what is coming.
+	if bal != null and s.time > 180.0 and _rng.randf() < 0.35:
+		missile = bal
 	# Missiles strike fast and with little warning: the enemy takes them
 	# whenever they cost not much more than the drones would.
 	var best: Option = drone
 	if missile != null and (best == null or missile.cost <= best.cost * (1.5 if adaptive else 1.25)):
 		best = missile
+	elif missile != null and drone != null:
+		# Otherwise the drones go in with missiles behind them, a share of
+		# the damage that grows as the war goes on and is largest against
+		# the capital, paying at most about twice what drones alone would.
+		var share: float = 0.3 + minf(0.25, s.time / 1600.0) + (0.1 if adaptive else 0.0) + (0.15 if b.kind == LiteKind.CAPITAL else 0.0)
+		var ratio: float = missile.cost / drone.cost
+		if ratio > 1.0:
+			share = minf(share, 1.1 / (ratio - 1.0))
+		var mc: int = roundi(missile.count * share)
+		if mc >= 1:
+			var o:= Option.new()
+			o.target = b
+			o.arm = LiteArm.DRONE
+			o.count = maxi(1, ceili(drone.count * (1.0 - share)))
+			o.route = drone.route
+			o.travel = drone.travel
+			o.mix_arm = missile.arm
+			o.mix_count = mc
+			o.mix_route = missile.route
+			o.mix_travel = missile.travel
+			o.cost = o.count * LiteRules.cost(LiteArm.DRONE) + mc * LiteRules.cost(missile.arm)
+			best = o
 	if best != null:
 		best.value = _value(s, b) * (hp / b.max_hp if b.kind == LiteKind.CAPITAL else 1.0)
 	return best
@@ -766,8 +815,9 @@ func _attack_smart(s: LiteSim, me: LiteSide) -> void:
 		if b.kind == LiteKind.FACTORY:
 			factories_known += 1
 	# Find more of the other side's sites when it knows few.
-	if (factories_known < 2 or s.time > _probe_at) and me.money > 40:
-		_probe_at = s.time + _r(70, 110) * tempo
+	# (A few scouts at a time: sent every tick they would eat the whole fund.)
+	if s.time > _probe_at and me.money > 40:
+		_probe_at = s.time + (_r(28, 42) if factories_known < 2 else _r(70, 110)) * tempo
 		var scouts: int = 3 if factories_known < 2 else 2
 		_scout_smart(s, me, scouts)
 	var options: Array[Option] = []
@@ -822,15 +872,21 @@ func _launch(s: LiteSim, me: LiteSide, plan: Array[Option]) -> void:
 	var arrive: float = 0.0
 	for o: Option in plan:
 		arrive = maxf(arrive, o.travel + o.count * (0.55 if o.arm == LiteArm.DRONE else 0.35) * 0.5)
+		if o.mix_arm >= 0:
+			arrive = maxf(arrive, o.mix_travel + o.mix_count * 0.35 * 0.5)
 	var raid: LiteRaid = null
 	for o: Option in plan:
-		var delay: float = maxf(0.0, arrive - o.travel)
 		var aim: Vector2 = o.target.pos
-		if o.arm == LiteArm.BALLISTIC:
-			raid = _or(s.strike(side, o.arm, aim, o.count, raid, delay), raid)
-		else:
-			raid = _or(s.strike(side, o.arm, aim, o.count, raid, delay, o.route), raid)
+		raid = _or(_send(s, o.arm, aim, o.count, raid, maxf(0.0, arrive - o.travel), o.route), raid)
+		if o.mix_arm >= 0:
+			# The missiles land just after the drones have drawn the defence's fire.
+			raid = _or(_send(s, o.mix_arm, aim, o.mix_count, raid, maxf(0.0, arrive + 3.0 - o.mix_travel), o.mix_route), raid)
 	me.war_fund = maxf(0, me.war_fund - (before - me.money))
+
+func _send(s: LiteSim, arm: int, aim: Vector2, count: int, raid: LiteRaid, delay: float, route: Array[Vector2]) -> LiteRaid:
+	if arm == LiteArm.BALLISTIC:
+		return s.strike(side, arm, aim, count, raid, delay)
+	return s.strike(side, arm, aim, count, raid, delay, route)
 
 func _scout_smart(s: LiteSim, me: LiteSide, n: int) -> void:
 	var regions: Array[LiteRegion] = []
