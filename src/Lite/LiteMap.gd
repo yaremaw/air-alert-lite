@@ -209,6 +209,43 @@ func side_at(p: Vector2) -> int:
 	var id: int = region_at(p)
 	return -1 if id == NONE else regions[id].side
 
+## The province a region belongs to: a capital city is part of the province
+## round it. -1 for the sea.
+func province(id: int) -> int:
+	if id < 0 or id >= regions.size():
+		return -1
+	var r: LiteRegion = regions[id]
+	return r.parent if r.city else r.id
+
+## The province holding a side's capital.
+func capital_province(side: int) -> int:
+	return province(region_at(capital[side]))
+
+## The provinces bordering province `id`.
+func provinces_next_to(id: int) -> Array[int]:
+	var out: Array[int] = []
+	for r: LiteRegion in regions:
+		if province(r.id) != id:
+			continue
+		for n: int in r.neighbors:
+			var p: int = province(n)
+			if p != id and p >= 0 and not out.has(p):
+				out.append(p)
+	return out
+
+## Whether province `id` borders the other side's land.
+func on_front(id: int) -> bool:
+	for n: int in provinces_next_to(id):
+		if regions[n].side != regions[id].side:
+			return true
+	return false
+
+## Hands a province, and any city in it, to `side`.
+func give(id: int, side: int) -> void:
+	for r: LiteRegion in regions:
+		if r.id == id or (r.city and r.parent == id):
+			r.side = side
+
 static func _r(rng: RandomNumberGenerator, a: float, b: float) -> float:
 	return a + rng.randf() * (b - a)
 

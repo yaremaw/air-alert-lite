@@ -113,6 +113,55 @@ func setup(side: int) -> void:
 		var gun: Variant = find_spot(side, factory, 14, 28) if i == 0 else null
 		if gun != null: add(side, LiteKind.GUN, gun, true)
 
+## A campaign mission starts from the sites the last one left, not a new war's:
+## each saved as a dictionary (see LiteCampaign.keep).
+func restore(saved: Array) -> void:
+	buildings.clear()
+	for d: Dictionary in saved:
+		var side: int = int(d["side"])
+		var b: LiteBuilding = add(side, int(d["kind"]), Vector2(float(d["x"]), float(d["y"])), true)
+		b.hp = minf(b.max_hp, float(d["hp"]))
+		b.build = float(d.get("build", 0.0))
+		b.seen[1 - side] = bool(d.get("seen", false))
+		if b.kind == LiteKind.CAPITAL:
+			sides[side].capital = b
+			b.seen[1 - side] = true
+	for b: LiteBuilding in buildings:
+		if b.kind == LiteKind.FACTORY: slots[b.region] = maxi(slots[b.region], factories_in(b.region))
+
+## Sites of `side` in province `id`, alive or not yet built.
+func sites_in(side: int, id: int, kind: int = -1) -> Array[LiteBuilding]:
+	var out: Array[LiteBuilding] = []
+	for b: LiteBuilding in buildings:
+		if b.alive and b.side == side and map.province(b.region) == id and (kind < 0 or b.kind == kind):
+			out.append(b)
+	return out
+
+## Hands province `id` to `to`: the old owner's sites there are lost, and any
+## alert over it is called off first, so the alert counts of both sides stay true.
+func hand_over(id: int, to: int) -> void:
+	for r: LiteRegion in map.regions:
+		if map.province(r.id) != id or not alert[r.id]:
+			continue
+		alert[r.id] = false
+		ballistic[r.id] = false
+		missile[r.id] = false
+		alerted[r.side] = maxi(0, alerted[r.side] - 1)
+	clear_province(id, 1 - to)
+	map.give(id, to)
+
+## When a province changes hands, the sites the old owner had there are lost:
+## blown up where they stand, without the news a strike would make.
+func clear_province(id: int, side: int) -> int:
+	var n: int = 0
+	for b: LiteBuilding in sites_in(side, id):
+		b.alive = false
+		b.dead_at = time
+		fx.append(LiteFx.new(LiteFxKind.BLAST, b.pos, Vector2.ZERO, 0, 0.9, 15.0, 1 - side))
+		fx.append(LiteFx.new(LiteFxKind.SCORCH, b.pos, Vector2.ZERO, 0, 40.0, 15.0, 1 - side))
+		n += 1
+	return n
+
 func can_place(side: int, p: Vector2) -> bool:
 	if map.side_at(p) != side: return false
 	for a: int in 4:
@@ -272,6 +321,8 @@ func random_spot(side: int, rng: RandomNumberGenerator) -> Vector2:
 	_tmp.clear()
 	for r: LiteRegion in map.regions:
 		if r.side == side and not r.city and r.spots.size() > 0: _tmp.append(r)
+	if _tmp.is_empty():
+		return sides[side].capital.pos
 	var pick: LiteRegion = _tmp[rng.randi_range(0, _tmp.size() - 1)]
 	return pick.spots[rng.randi_range(0, pick.spots.size() - 1)]
 
@@ -448,6 +499,10 @@ func origin(side: int, arm: int, target: Vector2) -> Vector2:
 		if r.side == side and not r.city and r.spots.size() > 0: _tmp.append(r)
 	_tmp.sort_custom(func(a: LiteRegion, b: LiteRegion) -> bool: return a.label.distance_squared_to(target) < b.label.distance_squared_to(target))
 	var n: int = _tmp.size()
+	# A side with no province left to launch from (a campaign can take them)
+	# launches from its capital.
+	if n == 0:
+		return sides[side].capital.pos
 	var pick: LiteRegion
 	match arm:
 		LiteArm.DRONE: pick = _tmp[_next(mini(3, n))]

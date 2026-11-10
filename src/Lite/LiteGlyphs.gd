@@ -12,6 +12,8 @@ const OURS: Color = Color("#4ea1ff")
 const ENEMY: Color = Color("#ff5a48")
 const YELLOW: Color = Color("#e5ad16")
 const GOOD: Color = Color("#46c47e")
+## A campaign mission's province and its card: apart from the yellow and red of the alerts.
+const OBJECTIVE: Color = Color("#a98bff")
 
 # Both countries are grey, as on a real alert map: ours lighter, the enemy's
 # darker. Colour means danger only: yellow while drones are about, red while

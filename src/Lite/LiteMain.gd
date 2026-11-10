@@ -31,6 +31,14 @@ var _autoplay: bool = false
 
 var _fake_mouse: Variant = null
 
+## The campaign being played and its mission now (null in a single war).
+var campaign: LiteCampaign = null
+var mission: LiteMission = null
+## Game time before this war began, for the clock: a campaign's runs on from
+## one mission to the next.
+var clock_offset: float = 0.0
+var _debrief_timer: float = -1
+
 
 ## The enemy's income on Easy, Normal and Hard. Hard was 1.3 until the maps
 ## grew more varied (more of them favour the side with more to spend): at
@@ -86,6 +94,9 @@ func _ready() -> void:
 	ui.show_menu()
 	if shots != null:
 		run_shots(shots, maps)
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-campaign="):
+			run_campaign(a.substr(16).lstrip("\"").rstrip("\""))
 	# The web build's benchmark: open the page with ?bench to play a war on
 	# its own, without sound, and print [perf] lines to the browser console.
 	# (--lite-bench runs the same on the desktop.)
@@ -110,11 +121,15 @@ func repack() -> void:
 		print("[repack] %s: %s" % [path, error_string(m.save_baked(path)) if m != null else "unreadable"])
 	get_tree().quit()
 
-func new_world(seed_: int) -> void:
+func new_world(seed_: int, campaign_: LiteCampaign = null) -> void:
 	seed = seed_
 	var t0: int = Time.get_ticks_msec()
 	map = LiteMap.for_seed(seed_)
-	sim = LiteSim.new(map, seed_)
+	if campaign_ != null:
+		campaign_.apply_map(map)
+	sim = LiteSim.new(map, seed_ + (campaign_.mission * 977 if campaign_ != null else 0))
+	if campaign_ != null and not campaign_.sites.is_empty():
+		sim.restore(campaign_.sites)
 	gun_shot_at = [-99.0, -99.0]
 	print("[lite] map %d: %d regions in %d ms" % [seed_, map.regions.size(), Time.get_ticks_msec() - t0])
 	if _view != null:
@@ -145,25 +160,36 @@ func to_title() -> void:
 	build_tool = null
 	strike_tool = null
 	_end_timer = -1
+	_leave_campaign()
 	new_world((seed * 7919 + 104729) % 1000003)
 	ui.clear_feed()
 	ui.show_menu()
+
+func _leave_campaign() -> void:
+	campaign = null
+	mission = null
+	clock_offset = 0.0
+	_debrief_timer = -1
 
 ## A point on the map to a point on the screen (for the HUD).
 func to_screen(p: Vector2) -> Vector2:
 	return get_viewport().canvas_transform * p
 
 func new_game() -> void:
-	if started:
+	if started or campaign != null:
+		_leave_campaign()
 		new_world((seed * 7919 + 104729) % 1000003)
-	var d: int = LiteSettings.difficulty
-	started = true
+	_start_war(LiteSettings.difficulty)
 	paused = false
+	ui.post("War. The enemy capital is %s; its factories repair it. Its other sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
+
+func _start_war(d: int) -> void:
+	started = true
 	build_tool = null
 	strike_tool = null
 	_end_timer = -1
 	sim.income_scale[1] = ENEMY_INCOME[d]
-	var ai: LiteAi = LiteAi.new(1, seed + 1, 22.0)
+	var ai: LiteAi = LiteAi.new(1, seed + 1 + (campaign.mission * 13 if campaign != null else 0), 22.0)
 	ai.war_share = ENEMY_WAR_SHARE[d]
 	ai.tempo = ENEMY_TEMPO[d]
 	ai.smart = d > 0
@@ -175,11 +201,86 @@ func new_game() -> void:
 	ui.close_menu()
 	ui.stats_view.visible = false
 	ui.clear_feed()
-	ui.post("War. The enemy capital is %s; its factories repair it. Its other sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
 	audio.click()
 
+## A campaign from its first mission, or the saved one from where it was left.
+func start_campaign(fresh: bool) -> void:
+	if fresh:
+		LiteCampaign.forget()
+		var c: LiteCampaign = LiteCampaign.fresh(int(fmod(Time.get_unix_time_from_system(), 1000003.0)), LiteSettings.difficulty)
+		c.save()
+		campaign = c
+	else:
+		campaign = LiteCampaign.load_saved()
+		if campaign == null:
+			return
+	begin_mission()
+
+## The next mission: the campaign's map as it stands, its sites, then the
+## briefing over the map with the war paused until it is closed.
+func begin_mission() -> void:
+	var c: LiteCampaign = campaign
+	new_world(c.map_seed, c)
+	clock_offset = c.clock
+	mission = c.make_mission(map)
+	_start_war(c.difficulty)
+	c.setup(mission, sim, sim.ai[1])
+	paused = true
+	ui.post("Mission %d: %s. %s" % [mission.number, mission.title, mission.goal_text(sim)], LiteGlyphs.OBJECTIVE)
+	ui.show_briefing(mission, c)
+
+## Closes the briefing and starts the mission's clock.
+func launch_mission() -> void:
+	ui.close_briefing()
+	paused = false
+	audio.click()
+
+## The mission is over: the province changes hands on the map at once, then
+## the debrief.
+func end_mission() -> void:
+	var m: LiteMission = mission
+	var changed: Array[int] = campaign.outcome(m, map)
+	if changed[0] >= 0:
+		var id: int = changed[0]
+		var to: int = changed[1]
+		sim.hand_over(id, to)
+		_view.refresh_sides()
+		if to == 0:
+			ui.post("Our troops take %s. The front moves forward." % map.regions[id].name, LiteGlyphs.GOOD)
+		else:
+			ui.post("The enemy takes %s. The front moves back." % map.regions[id].name, LiteGlyphs.ENEMY)
+		audio.play("explosion_b.wav", -9.0)
+	else:
+		ui.post(m.outcome, LiteGlyphs.GOOD if m.result == 0 else LiteGlyphs.ENEMY)
+	campaign.after(m, sim, changed)
+	build_tool = null
+	strike_tool = null
+	_debrief_timer = 2.5
+
+func show_debrief() -> void:
+	paused = true
+	var c: LiteCampaign = campaign
+	var m: LiteMission = mission
+	var lines: PackedStringArray = PackedStringArray([m.outcome])
+	if m.optional != LiteMission.NONE:
+		lines.append(("Optional goal met: %s." if m.optional_done else "Optional goal missed: %s.") % m.optional_text().to_lower())
+	lines.append("Provinces taken: %d · lost: %d" % [c.taken[0], c.taken[1]])
+	if c.finished:
+		LiteCampaign.forget()
+		var won: bool = c.results[c.results.size() - 1] == 0
+		lines.append("")
+		lines.append("The campaign ends here, %s." % ("with the enemy asking for a ceasefire" if won else "with the war still undecided"))
+		ui.show_debrief(m, "Campaign won" if won else "Ceasefire", "\n".join(lines), true, won)
+		return
+	c.save()
+	ui.show_debrief(m, "Mission complete" if m.result == 0 else "Mission failed", "\n".join(lines), false, m.result == 0)
+
+func next_mission() -> void:
+	ui.close_debrief()
+	begin_mission()
+
 func set_speed(s: float) -> void:
-	if not started or sim.winner >= 0:
+	if not started or sim.winner >= 0 or (mission != null and mission.result >= 0) or ui.briefing_open:
 		return
 	if s <= 0:
 		paused = true
@@ -207,7 +308,7 @@ func clock_text(t: float, date: bool) -> String:
 
 	var start: int = Time.get_unix_time_from_datetime_string("2026-10-26T21:00:00")
 	# To ten minutes: at this pace the minutes would only flicker.
-	var at: Dictionary = Time.get_datetime_dict_from_unix_time(start + int(floor(t * LiteRules.GAME_MINUTES / 10.0)) * 600)
+	var at: Dictionary = Time.get_datetime_dict_from_unix_time(start + int(floor((t + clock_offset) * LiteRules.GAME_MINUTES / 10.0)) * 600)
 	var hm: String = "%02d:%02d" % [int(at["hour"]), int(at["minute"])]
 	if not date:
 		return hm
@@ -249,11 +350,19 @@ func _process(delta: float) -> void:
 	# The home screen's picture covers the map: no need to draw the map under it.
 	_view.visible = not ui.home_open
 	handle_events()
+	if mission != null and started and mission.result < 0 and sim.winner < 0:
+		mission.update(sim)
+		if mission.result >= 0:
+			end_mission()
 	engine_sounds(delta)
 	if _end_timer > 0:
 		_end_timer -= delta
 		if _end_timer <= 0:
 			show_end()
+	if _debrief_timer > 0:
+		_debrief_timer -= delta
+		if _debrief_timer <= 0:
+			show_debrief()
 
 ## The buzz of enemy drones and the whine of cruise missiles over our land,
 ## louder the more of them there are; silent while the war waits.
@@ -317,7 +426,7 @@ func _unhandled_input(e: InputEvent) -> void:
 			ui.show_menu()
 		get_viewport().set_input_as_handled()
 		return
-	if key != null and key.pressed and not key.echo and (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and ui.home_open:
+	if key != null and key.pressed and not key.echo and (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and (ui.home_open or ui.briefing_open):
 		ui.enter()
 		get_viewport().set_input_as_handled()
 		return
@@ -331,7 +440,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		audio.click()
 		get_viewport().set_input_as_handled()
 		return
-	if not started or sim.winner >= 0 or ui.menu_open:
+	if not started or sim.winner >= 0 or ui.menu_open or (mission != null and mission.result >= 0):
 		return
 	var mb: InputEventMouseButton = e as InputEventMouseButton
 	if key != null and key.pressed and not key.echo:
@@ -456,6 +565,8 @@ func handle_events() -> void:
 	# hits on the capitals, sites lost or destroyed, ballistic launches and
 	# warnings. Alerts and all-clears show on the map and the banner.
 	for e: LiteEvent in sim.events:
+		if mission != null:
+			mission.on_event(e, map)
 		match e.type:
 			LiteEv.ALL_CLEAR:
 				if e.side == 0:
@@ -534,7 +645,13 @@ func handle_events() -> void:
 func show_end() -> void:
 	var me: LiteSide = sim.sides[0]
 	var won: bool = sim.winner == 0
-	var stats: String = ("%s has fallen after %s of war.\n\n" % [map.capital_name[1 if won else 0], LiteHud.duration(sim.time)]) + ("Enemy weapons shot down: %d\n" % me.downed) + ("Our hits on enemy sites: %d\n" % me.hits) + ("Enemy sites destroyed: %d\n" % me.destroyed) + ("Our sites lost: %d" % me.lost)
+	var stats: String = ("%s has fallen after %s of war.\n\n" % [map.capital_name[1 if won else 0], LiteHud.duration(sim.time + clock_offset)]) + ("Enemy weapons shot down: %d\n" % me.downed) + ("Our hits on enemy sites: %d\n" % me.hits) + ("Enemy sites destroyed: %d\n" % me.destroyed) + ("Our sites lost: %d" % me.lost)
+	if campaign != null:
+		# A capital falling ends the whole campaign, whichever mission it was.
+		stats = ("%s has fallen in mission %d of %d. The campaign is %s.\n\nProvinces taken: %d · lost: %d" %
+			[map.capital_name[1 if won else 0], mission.number, LiteCampaign.MISSIONS.size(), "won" if won else "lost",
+			campaign.taken[0], campaign.taken[1]])
+		LiteCampaign.forget()
 	ui.show_end(won, stats)
 
 func run_balance(seed_: int, seconds: int, seeds: int) -> void:
@@ -681,6 +798,81 @@ func run_shots(dir: String, maps: int) -> void:
 	ui.stats_view.visible = false
 	await stress(dir)
 	get_tree().quit()
+
+## A campaign played through by our own planner, without sound, for testing:
+## `--lite-campaign=<dir>` saves a screenshot of each briefing, each mission
+## under way and each debrief there, and prints how each mission went. Our
+## planner is pointed at each mission's province, as a player would be.
+func run_campaign(dir: String) -> void:
+	AudioServer.set_bus_mute(0, true)
+	LiteCampaign.path = "user://lite_campaign_test.json"
+	DirAccess.make_dir_recursive_absolute(dir)
+	_autoplay = true
+	await _wait(0.5)
+	ui.show_campaign()
+	await _wait(0.4)
+	await _shot(dir, "c0_campaign.png")
+	start_campaign(true)
+	while campaign != null:
+		var m: LiteMission = mission
+		print("[campaign] mission %d %s: %s, %s, %d days, notes: %s" % [m.number, m.title, m.goal_text(sim), m.optional_text(), roundi(m.days), " | ".join(m.notes)])
+		await _wait(0.8)
+		await _shot(dir, "c%d_a_briefing.png" % m.number)
+		launch_mission()
+		print("[campaign] start: %s" % line(sim))
+		# The planner that holds its own against Normal in the balance runs.
+		sim.ai[0].classic = true
+		sim.ai[0].waves = true
+		if m.kind == LiteMission.HOLD:
+			# What a player would do first: more air defence over the province.
+			var anchor: Vector2 = map.regions[m.region].label
+			for b: LiteBuilding in sim.sites_in(0, m.region, LiteKind.FACTORY):
+				anchor = b.pos
+			for k: int in [LiteKind.SAM, LiteKind.GUN, LiteKind.GUN]:
+				var p: Variant = sim.find_spot(0, anchor, 12, 40)
+				if p != null:
+					sim.build(0, k, p)
+		else:
+			sim.ai[0].focus = m.region if m.kind == LiteMission.STRIKE else map.capital_province(1)
+			sim.ai[0].focus_weight = 5.0
+		if m.kind == LiteMission.CAPITAL:
+			_salvos(m)
+		speed = 3
+		Engine.time_scale = 6
+		await _until(func() -> bool: return m.result >= 0 or sim.winner >= 0 or sim.time > m.length * 0.35)
+		Engine.time_scale = 1
+		await _wait(0.4)
+		await _shot(dir, "c%d_b_war.png" % m.number)
+		if m.number == 1:
+			ui.show_menu()
+			await _wait(0.5)
+			await _shot(dir, "c1_pause_menu.png")
+			ui.close_menu()
+		Engine.time_scale = 6
+		await _until(func() -> bool: return m.result >= 0 or sim.winner >= 0)
+		Engine.time_scale = 1
+		print("[campaign] mission %d: result %d at t=%d (%s) · optional %s · %s" % [m.number, m.result, roundi(sim.time), m.outcome, m.optional_done, line(sim)])
+		if sim.winner >= 0:
+			await _wait(3.0)
+			await _shot(dir, "c9_end.png")
+			print("[campaign] a capital fell: winner %d" % sim.winner)
+			break
+		await _until(func() -> bool: return ui.debrief_open)
+		await _wait(0.6)
+		await _shot(dir, "c%d_c_debrief.png" % m.number)
+		if campaign.finished:
+			break
+		next_mission()
+	LiteCampaign.forget()
+	get_tree().quit()
+
+## The test player against a capital: every ballistic missile it can afford,
+## six at a time, the rest of the war left to the planner.
+func _salvos(m: LiteMission) -> void:
+	while m.result < 0 and sim.winner < 0 and campaign != null:
+		await _wait(0.2)
+		if sim.sides[0].money >= 6 * LiteRules.cost(LiteArm.BALLISTIC):
+			sim.strike(0, LiteArm.BALLISTIC, sim.sides[1].capital.pos, 6)
 
 func run_bench() -> void:
 	AudioServer.set_bus_mute(0, true)

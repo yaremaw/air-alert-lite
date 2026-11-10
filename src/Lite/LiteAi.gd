@@ -26,6 +26,11 @@ var waves: bool = false
 var adaptive: bool = false
 
 var massing: bool = false
+## A province it is told to go for (a campaign mission's offensive), and how
+## much more the sites there are worth to it than elsewhere.
+var focus: int = -1
+var focus_weight: float = 1.0
+var _focus_at: float = 0.0
 var _wave_cost: float = 0.0
 var _mass_since: float = 0.0
 var _plan_at: float = 90.0
@@ -43,6 +48,12 @@ func _init(p_side: int, seed: int, first_raid: float) -> void:
 	_rng = RandomNumberGenerator.new()
 	_rng.seed = seed
 	_next_raid = first_raid
+
+## No raids or waves before game time `t` (a campaign offensive gathering).
+func hold_until(t: float) -> void:
+	_next_raid = maxf(_next_raid, t)
+	_plan_at = maxf(_plan_at, t)
+	_focus_at = maxf(_focus_at, t)
 
 func _r(a: float, b: float) -> float:
 	return a + _rng.randf() * (b - a)
@@ -163,6 +174,7 @@ func grow(s: LiteSim, me: LiteSide) -> void:
 	if best >= 0 and s.build_factory(side, best) != null: _last_factory = s.time
 
 func attack(s: LiteSim, me: LiteSide) -> void:
+	_press_focus(s, me)
 	if waves:
 		if not massing and s.time >= _plan_at: plan_wave(s, me)
 		elif massing and (minf(me.war_fund, me.money) >= _wave_cost or s.time - _mass_since > 240):
@@ -418,6 +430,7 @@ func pick(s: LiteSim, me: LiteSide) -> LiteBuilding:
 			LiteKind.SAM: weights[i] = 2.0 + 3.0 * me.last_raid_loss + (0.4 * b.kills if adaptive else 0.0)
 			LiteKind.GUN: weights[i] = 1.0 + me.last_raid_loss
 			_: weights[i] = (0.5 + s.time / 300.0) if factories else (3.0 + s.time / 200.0)
+		weights[i] *= _focus(s, b)
 		total += weights[i]
 	var roll: float = _r(0, total)
 	for i: int in _targets.size():
@@ -682,8 +695,39 @@ func _loss(s: LiteSim, arm: int) -> float:
 	var land: int = st.landed[arm] if side == 1 else st.our_landed[arm]
 	return minf(0.85, (down + 0.5) / (down + land + 2.0))
 
+## With nothing it knows of left standing in its focus province, it shells
+## the province itself now and then: an offensive goes on whether or not
+## there is a site to aim at. True if it sent a raid.
+func _press_focus(s: LiteSim, me: LiteSide) -> bool:
+	if focus < 0 or s.time < _focus_at:
+		return false
+	for b: LiteBuilding in s.buildings:
+		if b.alive and b.side != side and b.seen[side] and s.map.province(b.region) == focus:
+			return false
+	var spots: Array[Vector2] = s.map.regions[focus].spots
+	if spots.is_empty():
+		return false
+	_focus_at = s.time + _r(16, 26) * tempo
+	var n: int = mini(12, int(minf(me.war_fund, me.money) * 0.5 / LiteRules.cost(LiteArm.DRONE)))
+	if n < 3:
+		return false
+	var at: Vector2 = spots[_next(spots.size())]
+	var route: Array[Vector2] = []
+	if smart and not classic:
+		route = _route(LiteArm.DRONE, at)[0]
+	var before: float = me.money
+	s.strike(side, LiteArm.DRONE, at, n, null, 0.0, route)
+	me.war_fund = maxf(0, me.war_fund - (before - me.money))
+	return true
+
+func _focus(s: LiteSim, b: LiteBuilding) -> float:
+	return focus_weight if focus >= 0 and s.map.province(b.region) == focus else 1.0
+
 ## What destroying a site is worth to us, in money.
 func _value(s: LiteSim, b: LiteBuilding) -> float:
+	return _site_value(s, b) * _focus(s, b)
+
+func _site_value(s: LiteSim, b: LiteBuilding) -> float:
 	var near: int = 0
 	if b.is_ad or b.is_gun:
 		for o: LiteBuilding in s.buildings:
@@ -806,6 +850,7 @@ func _attack_smart(s: LiteSim, me: LiteSide) -> void:
 		return
 	_next_raid = s.time + 2.0
 	_refresh(s)
+	_press_focus(s, me)
 	var known: Array[LiteBuilding] = []
 	for b: LiteBuilding in s.buildings:
 		if b.alive and b.side != side and b.seen[side] and b.ready or (b.alive and b.side != side and b.seen[side] and b.kind == LiteKind.FACTORY):

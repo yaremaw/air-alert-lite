@@ -198,11 +198,22 @@ func _draw_ranges() -> void:
 			b.ring(s.pos, r, Color(col, 0.16), 1.0)
 	b.flush()
 
+## A province changed hands: the shader draws the frontier from each region's
+## side (row 1); the fills follow on their own.
+func refresh_sides() -> void:
+	for i: int in main.map.regions.size():
+		_pal.set_pixel(i, 1, Color(main.map.regions[i].side, 0, 0, 1))
+	_pal_tex.update(_pal)
+
 func target(i: int) -> Color:
 	var sim_: LiteSim = main.sim
 	var r: LiteRegion = main.map.regions[i]
 	var land: Color = LiteGlyphs.OUR_LAND if r.side == 0 else LiteGlyphs.ENEMY_LAND
 	var c: Color = land
+	# A campaign mission's province glows violet, gently pulsing, until it is decided.
+	var m: LiteMission = main.mission
+	if m != null and m.result < 0 and main.map.province(i) == m.region:
+		c = c.lerp(LiteGlyphs.OBJECTIVE, 0.22 + 0.08 * sin(_clock * 2.6))
 	if sim_.alert[i]:
 		if r.side == 0:
 			c = LiteGlyphs.MISSILE_ALERT if sim_.missile[i] else LiteGlyphs.AIR_ALERT
@@ -604,6 +615,10 @@ func _draw_top() -> void:
 	for s: LiteBuilding in sim_.buildings:
 		if s.alive and s.kind == LiteKind.CAPITAL:
 			LiteLabels.draw_label(_top, s.pos + Vector2(0, 26), main.map.capital_name[s.side], 12, LiteGlyphs.TEXT)
+	var m: LiteMission = main.mission
+	if m != null and m.result < 0 and m.kind != LiteMission.CAPITAL:
+		var word: String = "HOLD" if m.kind == LiteMission.HOLD else "OBJECTIVE"
+		LiteLabels.draw_label(_top, main.map.regions[m.region].label + Vector2(0, -15), word, 10, LiteGlyphs.OBJECTIVE)
 	draw_tool()
 
 func draw_building(s: LiteBuilding) -> void:

@@ -15,12 +15,14 @@ const LINKS: Array = [
 var main: LiteMain = null
 var on_continue: Callable = Callable()
 var on_new_war: Callable = Callable()
+var on_campaign: Callable = Callable()
 var on_settings: Callable = Callable()
 var on_quit: Callable = Callable()
 
 var scene: LiteHomeScene = null
 var _continue: LiteMenuItem = null
 var _new_war: LiteMenuItem = null
+var _campaign: LiteMenuItem = null
 var _sub: Label = null
 
 func build() -> void:
@@ -53,6 +55,7 @@ func build() -> void:
 	add_child(menu)
 	_continue = _item(menu, "CONTINUE", func() -> void: on_continue.call())
 	_new_war = _item(menu, "NEW WAR", func() -> void: on_new_war.call())
+	_campaign = _item(menu, "CAMPAIGN", func() -> void: on_campaign.call())
 	_item(menu, "SETTINGS", func() -> void: on_settings.call())
 	if not OS.has_feature("web"):
 		_item(menu, "QUIT", func() -> void: on_quit.call())
@@ -118,8 +121,11 @@ func set_live(live: bool, sub: String) -> void:
 	_new_war.primary = not live
 	_new_war.note = "" if live else "Enter"
 	_continue.note = "Esc" if live else ""
+	var saved: LiteCampaign = LiteCampaign.load_saved()
+	_campaign.note = ("Mission %d of %d" % [saved.mission + 1, LiteCampaign.MISSIONS.size()]) if saved != null else "New"
 	_continue.queue_redraw()
 	_new_war.queue_redraw()
+	_campaign.queue_redraw()
 	_sub.text = sub
 
 func activate_primary() -> void:

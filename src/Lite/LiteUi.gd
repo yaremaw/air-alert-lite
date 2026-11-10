@@ -23,13 +23,29 @@ var _end: Control = null
 var home: LiteHome = null
 var _end_title: Label = null
 var _end_text: Label = null
+var _campaign: Control = null
+var _cdiff: Array[LiteChip] = [null, null, null]
+var _campaign_go: Button = null
+var _campaign_new: Button = null
+var _briefing: Control = null
+var _brief_box: VBoxContainer = null
+var _debrief: Control = null
+var _debrief_title: Label = null
+var _debrief_text: Label = null
+var _debrief_next: Button = null
 
 var menu_open: bool:
-	get: return _menu.visible or _new_game.visible or _settings.visible or stats_view.visible
+	get: return _menu.visible or _new_game.visible or _settings.visible or stats_view.visible or briefing_open or _debrief.visible
 
 ## The home screen or one of the screens it opens (New war, Settings).
 var home_open: bool:
-	get: return _menu.visible or _new_game.visible or _settings.visible
+	get: return _menu.visible or _new_game.visible or _settings.visible or _campaign.visible
+
+var briefing_open: bool:
+	get: return _briefing != null and _briefing.visible
+
+var debrief_open: bool:
+	get: return _debrief != null and _debrief.visible
 
 const BUILD_KINDS: Array[int] = [LiteKind.FACTORY, LiteKind.GUN, LiteKind.SAM]
 const ARMS: Array[int] = [LiteArm.DRONE, LiteArm.CRUISE, LiteArm.BALLISTIC]
@@ -177,6 +193,9 @@ func build() -> void:
 	_menu = _build_menu(root)
 	_new_game = _build_new_game(root)
 	_settings = _build_settings(root)
+	_campaign = _build_campaign(root)
+	_briefing = _build_briefing(root)
+	_debrief = _build_debrief(root)
 	_end = _build_end(root)
 	stats_view = LiteStatsView.new()
 	stats_view.main = main
@@ -301,6 +320,7 @@ func _build_menu(root: Control) -> Control:
 	home.build()
 	home.on_continue = close_menu
 	home.on_new_war = func() -> void: _show_screen(_new_game)
+	home.on_campaign = show_campaign
 	home.on_settings = func() -> void: _show_screen(_settings)
 	home.on_quit = func() -> void: main.get_tree().quit()
 	return home
@@ -393,25 +413,167 @@ func _build_end(root: Control) -> Control:
 		show_menu())
 	return o
 
+func _build_campaign(root: Control) -> Control:
+	var ob: Array = _overlay(root, 500)
+	var o: Control = ob[0]
+	var box: VBoxContainer = ob[1]
+	_title(box, "Campaign")
+	box.add_child(_text(
+		"One war, fought as three missions on one map, a few days apart.\n\n" +
+		"•  Each mission is a fight over one province, with a goal and a deadline.\n" +
+		"•  Take a province and the front moves forward. Fail, and the enemy pushes back and takes one of yours.\n" +
+		"•  Your sites, their damage and up to $600 of your money carry over to the next mission.\n" +
+		"•  Whoever loses a province rallies in the next mission.\n" +
+		"•  If either capital falls, the campaign ends there.",
+		13, LiteGlyphs.MUTED))
+	var row: HBoxContainer = _row(box)
+	var names: Array[String] = ["Easy", "Normal", "Hard"]
+	for i in 3:
+		var d: int = i
+		var c:= LiteChip.new()
+		c.text = names[i]
+		c.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		c.custom_minimum_size = Vector2(0, 32)
+		c.tooltip_text = "For a new campaign; one under way keeps its own"
+		c.clicked = func() -> void:
+			LiteSettings.difficulty = d
+			LiteSettings.save()
+			main.audio.click()
+		_cdiff[i] = c
+		row.add_child(c)
+	_campaign_go = _wide(box, "Continue", true, func() -> void:
+		_show_screen(null)
+		main.start_campaign(false))
+	_campaign_new = _wide(box, "New campaign", true, func() -> void:
+		_show_screen(null)
+		main.start_campaign(true))
+	_wide(box, "Back", false, func() -> void: _show_screen(_menu))
+	return o
+
+func show_campaign() -> void:
+	var saved: LiteCampaign = LiteCampaign.load_saved()
+	_campaign_go.visible = saved != null
+	if saved != null:
+		_campaign_go.text = "Continue · mission %d of %d" % [saved.mission + 1, LiteCampaign.MISSIONS.size()]
+	_quiet(_campaign_new, saved != null)
+	_campaign_new.text = "New campaign" if saved == null else "Start over"
+	_show_screen(_campaign)
+
+## A side overlay over the panel, leaving the map in view: the briefing and the
+## debrief, so the province fought over can be seen on the map beside them.
+func _side_overlay(root: Control) -> Array:
+	var o:= Control.new()
+	o.mouse_filter = Control.MOUSE_FILTER_STOP
+	o.visible = false
+	o.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var dim:= ColorRect.new()
+	dim.color = Color(LiteGlyphs.PAGE, 0.25)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	o.add_child(dim)
+	var panel:= PanelContainer.new()
+	panel.anchor_left = 1; panel.anchor_right = 1; panel.anchor_top = 0.5; panel.anchor_bottom = 0.5
+	panel.offset_left = -430; panel.offset_right = -10
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	panel.add_theme_stylebox_override("panel", LiteGlyphs.box(LiteGlyphs.PANEL, LiteGlyphs.OBJECTIVE.darkened(0.3), 16, 24))
+	o.add_child(panel)
+	var box:= VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	root.add_child(o)
+	return [o, box]
+
+func _build_briefing(root: Control) -> Control:
+	var ob: Array = _side_overlay(root)
+	_brief_box = ob[1]
+	return ob[0]
+
+func show_briefing(m: LiteMission, c: LiteCampaign) -> void:
+	for n: Node in _brief_box.get_children():
+		_brief_box.remove_child(n)
+		n.queue_free()
+	var box: VBoxContainer = _brief_box
+	var head:= _text("MISSION %d OF %d  ·  %s" % [m.number, LiteCampaign.MISSIONS.size(), main.clock_text(0.0, true).to_upper()], 11, LiteGlyphs.OBJECTIVE, true)
+	head.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(head)
+	var t:= _text(m.title, 30, LiteGlyphs.TEXT, true)
+	t.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(t)
+	box.add_child(_text(m.briefing, 13, LiteGlyphs.MUTED))
+	box.add_child(_section("GOAL", "%s" % LiteHud.duration(m.length)))
+	box.add_child(_text(m.goal_text(main.sim), 14, LiteGlyphs.TEXT, true))
+	if m.optional != LiteMission.NONE:
+		box.add_child(_text("Optional: " + m.optional_text(), 12, LiteGlyphs.MUTED))
+	if m.notes.size() > 0:
+		box.add_child(_section("THIS MISSION", ""))
+		for n: String in m.notes:
+			box.add_child(_text("•  " + n, 12, LiteGlyphs.MUTED))
+	if c.history.size() > 0:
+		box.add_child(_section("SO FAR", ""))
+		for h: String in c.history:
+			box.add_child(_text(h, 11, LiteGlyphs.FAINT))
+	_wide(box, "Begin", true, main.launch_mission)
+	box.add_child(_text("Enter to begin  ·  the war waits until you do", 11, LiteGlyphs.FAINT))
+	_briefing.visible = true
+
+func close_briefing() -> void:
+	_briefing.visible = false
+
+func _build_debrief(root: Control) -> Control:
+	var ob: Array = _side_overlay(root)
+	var o: Control = ob[0]
+	var box: VBoxContainer = ob[1]
+	_debrief_title = _text("", 30, LiteGlyphs.TEXT, true)
+	_debrief_title.add_theme_font_override("font", LiteGlyphs.black)
+	_debrief_text = _text("", 13, LiteGlyphs.MUTED)
+	box.add_child(_debrief_title)
+	box.add_child(_debrief_text)
+	_debrief_next = _wide(box, "Next mission", true, main.next_mission)
+	_wide(box, "Statistics", false, func() -> void: show_stats())
+	_wide(box, "Main menu", false, func() -> void:
+		_debrief.visible = false
+		main.to_title())
+	return o
+
+func show_debrief(m: LiteMission, title: String, text: String, last: bool, good: bool) -> void:
+	_debrief_title.text = title
+	_debrief_title.add_theme_color_override("font_color", LiteGlyphs.GOOD if good else LiteGlyphs.ENEMY)
+	_debrief_text.text = text
+	_debrief_next.visible = not last
+	_debrief.visible = true
+
+func close_debrief() -> void:
+	_debrief.visible = false
+
 ## The home screen stays behind New war and Settings (their dim lies over it).
 func _show_screen(screen: Control) -> void:
 	_menu.visible = screen != null
 	_new_game.visible = screen == _new_game
 	_settings.visible = screen == _settings
+	_campaign.visible = screen == _campaign
 
 func show_menu() -> void:
 	if main.started and main.sim.winner >= 0:
 		main.to_title()          # after a war ends, back to the home screen's own war
 		return
 	var live: bool = main.started
-	home.set_live(live, ("The war is paused · %s" % main.clock_text(main.sim.time, true)) if live
-		else "A real-time air war on a live air-alert map.")
+	var sub: String = "A real-time air war on a live air-alert map."
+	if live and main.mission != null:
+		sub = "Campaign, mission %d: %s · paused · %s" % [main.mission.number, main.mission.title, main.clock_text(main.sim.time, true)]
+	elif live:
+		sub = "The war is paused · %s" % main.clock_text(main.sim.time, true)
+	home.set_live(live, sub)
 	_end.visible = false
 	_show_screen(_menu)
 
 ## Enter: Start on the New war screen, the leading item on the home screen.
 func enter() -> void:
-	if _new_game.visible:
+	if briefing_open:
+		main.launch_mission()
+	elif _campaign.visible:
+		_show_screen(null)
+		main.start_campaign(not _campaign_go.visible)
+	elif _new_game.visible:
 		_show_screen(null)
 		main.new_game()
 	elif _menu.visible and not _settings.visible:
@@ -430,7 +592,7 @@ func show_stats(tab: int = 0) -> void:
 func back() -> void:
 	if stats_view.visible:
 		stats_view.visible = false
-	elif _new_game.visible or _settings.visible:
+	elif _new_game.visible or _settings.visible or _campaign.visible:
 		_show_screen(_menu)
 	elif _menu.visible and main.started and main.sim.winner < 0:
 		close_menu()
@@ -483,6 +645,7 @@ func _process(_delta: float) -> void:
 		_strike[i].affordable = me.money >= LiteRules.cost(ARMS[i])
 		_salvo[i].selected = main.salvo == SALVOS[i]
 		_diff[i].selected = LiteSettings.difficulty == i
+		_cdiff[i].selected = LiteSettings.difficulty == i
 	for i in 4:
 		_volume[i].selected = LiteSettings.volume == i
 	# The browser can leave fullscreen on its own (its Esc): follow it.

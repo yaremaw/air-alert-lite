@@ -13,7 +13,7 @@ var _hover: float = 0.0
 var _in: bool = false
 var _drawn: int = -1
 
-const H: float = 62.0
+const H: float = 56.0
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(380, H)

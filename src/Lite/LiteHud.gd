@@ -11,6 +11,8 @@ var _mouse: Vector2 = Vector2.ZERO
 
 var _hover: Variant = null
 var _tool: int = -1
+## Where the mission card ends on the right (0 without one): the alert card keeps clear of it.
+var _mission_right: float = 0.0
 var _card: StyleBoxFlat = LiteGlyphs.box(Color(LiteGlyphs.PANEL, 0.96), LiteGlyphs.LINE, 10)
 var _tip: StyleBoxFlat = LiteGlyphs.box(Color(LiteGlyphs.PANEL, 0.97), LiteGlyphs.LINE, 7)
 
@@ -55,6 +57,7 @@ func _draw() -> void:
 func _draw_body() -> void:
 	if not main.started:
 		return
+	_draw_mission()
 	_draw_alert_card()
 	_draw_badge()
 	_draw_hint()
@@ -102,7 +105,8 @@ func _draw_alert_card() -> void:
 		state = 1
 	var font: Font = LiteGlyphs.bold
 	var w: float = maxf(font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x, LiteGlyphs.font.get_string_size(sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x) + 74
-	var cx: float = LiteMap.W / 2.0
+	# Centred on the map, or clear of a mission's card when there is one.
+	var cx: float = maxf(LiteMap.W / 2.0, _mission_right + 12 + w / 2 + 6)
 	var grow: float = _pulse * _pulse * 6.0
 	var rect:= Rect2(cx - w / 2 - grow, 14 - grow * 0.5, w + grow * 2, 54 + grow)
 	_card.border_color = LiteGlyphs.LINE.lerp(tone, 0.55 if state > 0 else 0.0)
@@ -115,6 +119,44 @@ func _draw_alert_card() -> void:
 	draw_string(font, Vector2(rect.position.x + 52, rect.position.y + 24), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, tone if state > 0 else LiteGlyphs.TEXT)
 	draw_string(LiteGlyphs.font, Vector2(rect.position.x + 52, rect.position.y + 42), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
 
+## A campaign mission's card, top left: the goal and how far it has got, the
+## optional goal, and the time left.
+func _draw_mission() -> void:
+	_mission_right = 0.0
+	var m: LiteMission = main.mission
+	if m == null:
+		return
+	var sim: LiteSim = main.sim
+	var rows: Array = []
+	var goal_col: Color = LiteGlyphs.TEXT if m.result < 0 else (LiteGlyphs.GOOD if m.result == 0 else LiteGlyphs.ENEMY)
+	rows.append([m.goal_text(sim), m.goal_progress(sim), goal_col, 12, LiteGlyphs.bold])
+	if m.optional != LiteMission.NONE:
+		var oc: Color = LiteGlyphs.GOOD if m.optional_done else (LiteGlyphs.MUTED if m.optional_open() else LiteGlyphs.FAINT)
+		rows.append(["Optional: " + m.optional_text(true), m.optional_progress(), oc, 11, LiteGlyphs.font])
+	var left: String
+	if m.result < 0:
+		left = "%s left" % duration(m.time_left(sim))
+	else:
+		left = "Mission complete" if m.result == 0 else "Mission failed"
+	rows.append([left, "", LiteGlyphs.MUTED if m.result < 0 else goal_col, 11, LiteGlyphs.font])
+	var head: String = "MISSION %d · %s" % [m.number, m.title.to_upper()]
+	var w: float = LiteGlyphs.black.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	for r: Array in rows:
+		var f: Font = r[4]
+		w = maxf(w, f.get_string_size(r[0], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3]).x + 16 + f.get_string_size(r[1], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3]).x)
+	var rect:= Rect2(14, 14, w + 28, 34 + rows.size() * 18)
+	_mission_right = rect.end.x
+	_card.border_color = LiteGlyphs.LINE.lerp(LiteGlyphs.OBJECTIVE, 0.5)
+	draw_style_box(_card, rect)
+	draw_string(LiteGlyphs.black, Vector2(rect.position.x + 14, rect.position.y + 22), head, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.OBJECTIVE)
+	var y: float = rect.position.y + 42
+	for r: Array in rows:
+		var f: Font = r[4]
+		draw_string(f, Vector2(rect.position.x + 14, y), r[0], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3], r[2])
+		if r[1] != "":
+			draw_string(LiteGlyphs.bold, Vector2(rect.end.x - 14, y), r[1], HORIZONTAL_ALIGNMENT_RIGHT, -1, r[3], r[2])
+		y += 18
+
 func _draw_badge() -> void:
 	var at:= Vector2(22, size.y - 58)
 	var logo:= Rect2(at, Vector2(36, 36))
@@ -123,7 +165,7 @@ func _draw_badge() -> void:
 	LiteLogo.draw_mark(self, logo.get_center(), 11.5)
 	draw_string(LiteGlyphs.black, Vector2(at.x + 46, at.y + 14), "STRIKE ALERT", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.MUTED)
 	draw_string(LiteGlyphs.bold, Vector2(at.x + 46, at.y + 32), main.clock_text(main.sim.time, true), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LiteGlyphs.TEXT)
-	if main.paused and main.sim.winner < 0:
+	if main.paused and main.sim.winner < 0 and not main.ui.briefing_open and not (main.mission != null and main.mission.result >= 0):
 		draw_string(LiteGlyphs.bold, Vector2(at.x + 46, at.y - 8), "PAUSED · Space to resume", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.YELLOW)
 
 func _draw_hint() -> void:
