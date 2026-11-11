@@ -122,7 +122,7 @@ func set_live(live: bool, sub: String) -> void:
 	_new_war.note = "" if live else "Enter"
 	_continue.note = "Esc" if live else ""
 	var saved: LiteCampaign = LiteCampaign.load_saved()
-	_campaign.note = ("Mission %d of %d" % [saved.mission + 1, LiteCampaign.MISSIONS.size()]) if saved != null else "New"
+	_campaign.note = ("Operation %d" % (saved.ops + 1)) if saved != null else "New"
 	_continue.queue_redraw()
 	_new_war.queue_redraw()
 	_campaign.queue_redraw()

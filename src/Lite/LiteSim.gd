@@ -37,6 +37,12 @@ var fx: Array[LiteFx] = []
 var events: Array[LiteEvent] = []
 var ai: Array[LiteAi] = [null, null]
 var sams_on_drones: Array[bool] = [true, true]
+## How much more often each side's SAMs hit: more while it has a radar.
+var sam_bonus: Array[float] = [1.0, 1.0]
+## Until when no drones can be launched (a storm), in game time.
+var grounded_until: float = -1.0
+## Until when each side's SAMs cannot fire (an outage), in game time.
+var sam_off_until: Array[float] = [-1.0, -1.0]
 var income_scale: Array[float] = [1.0, 1.0]
 var time: float = 0.0
 var winner: int = -1
@@ -106,28 +112,41 @@ func setup(side: int) -> void:
 	var sam: Variant = find_spot(side, map.capital[side], 14, 26)
 	if sam != null: add(side, LiteKind.SAM, sam, true)
 
+	# On an operation's map the land is narrow: the factories go to the
+	# districts deepest behind the front instead of round the command.
+	var deep: Array[LiteRegion] = []
+	if not map.focus.is_empty():
+		deep = _deepest(side)
 	for i: int in 2:
 		var factory: Variant = find_spot(side, map.capital[side], 55 + 40 * i, 110 + 50 * i)
+		if i < deep.size():
+			for t: int in 30:
+				var q: Vector2 = deep[i].spots[_next(deep[i].spots.size())]
+				if can_place(side, q):
+					factory = q
+					break
 		if factory == null: continue
 		add(side, LiteKind.FACTORY, factory, true)
 		var gun: Variant = find_spot(side, factory, 14, 28) if i == 0 else null
 		if gun != null: add(side, LiteKind.GUN, gun, true)
 
-## A campaign mission starts from the sites the last one left, not a new war's:
-## each saved as a dictionary (see LiteCampaign.keep).
-func restore(saved: Array) -> void:
-	buildings.clear()
-	for d: Dictionary in saved:
-		var side: int = int(d["side"])
-		var b: LiteBuilding = add(side, int(d["kind"]), Vector2(float(d["x"]), float(d["y"])), true)
-		b.hp = minf(b.max_hp, float(d["hp"]))
-		b.build = float(d.get("build", 0.0))
-		b.seen[1 - side] = bool(d.get("seen", false))
-		if b.kind == LiteKind.CAPITAL:
-			sides[side].capital = b
-			b.seen[1 - side] = true
-	for b: LiteBuilding in buildings:
-		if b.kind == LiteKind.FACTORY: slots[b.region] = maxi(slots[b.region], factories_in(b.region))
+## The regions of `side` furthest from the other side's land, deepest first.
+func _deepest(side: int) -> Array[LiteRegion]:
+	var mine: Array[LiteRegion] = []
+	var theirs: Array[Vector2] = []
+	for r: LiteRegion in map.regions:
+		if r.side == side and not r.city and r.spots.size() > 0:
+			mine.append(r)
+		elif r.side != side:
+			theirs.append(r.label)
+	var depth: Dictionary = {}
+	for r: LiteRegion in mine:
+		var d: float = INF
+		for q: Vector2 in theirs:
+			d = minf(d, r.label.distance_to(q))
+		depth[r] = d
+	mine.sort_custom(func(a: LiteRegion, b: LiteRegion) -> bool: return depth[a] > depth[b])
+	return mine
 
 ## Sites of `side` in province `id`, alive or not yet built.
 func sites_in(side: int, id: int, kind: int = -1) -> Array[LiteBuilding]:
@@ -295,6 +314,7 @@ func add(side: int, kind: int, p: Vector2, instant: bool) -> LiteBuilding:
 func strike(side: int, arm: int, target: Vector2, count: int, raid: LiteRaid = null, delay: float = 0.0, route: Array[Vector2] = []) -> LiteRaid:
 	var c: int = LiteRules.cost(arm) * count
 	if count <= 0 or sides[side].money < c: return null
+	if arm == LiteArm.DRONE and time < grounded_until: return null
 	sides[side].money -= c
 	if raid == null:
 		raid = LiteRaid.new()
@@ -423,6 +443,7 @@ func step_fx(dt: float) -> void:
 		b.fire_flash = maxf(0, b.fire_flash - dt * 4.0)
 
 func economy(dt: float) -> void:
+	var radar: Array[bool] = [false, false]
 	for side: LiteSide in sides:
 		var income: float = LiteRules.CAPITAL_INCOME if side.capital.alive else 0.0
 		var work: float = 0
@@ -434,11 +455,15 @@ func economy(dt: float) -> void:
 				continue
 			if b.kind == LiteKind.FACTORY:
 				work += (0.4 + 0.6 * b.hp / b.max_hp) * (LiteRules.ALERT_WORK if alert[b.region] else 1.0)
+			elif b.kind == LiteKind.RADAR:
+				radar[side.index] = true
 		side.income = (income + LiteRules.FACTORY_INCOME * work) * income_scale[side.index]
 		side.money += side.income * dt
 		var cap: LiteBuilding = side.capital
 		side.repair = minf(LiteRules.MAX_REPAIR, LiteRules.CAPITAL_REPAIR * work) if cap.alive and cap.hp < cap.max_hp else 0.0
 		if side.repair > 0: cap.hp = minf(cap.max_hp, cap.hp + side.repair * dt)
+	for s: int in 2:
+		sam_bonus[s] = LiteRules.RADAR_PK if radar[s] else 1.0
 
 func launch(p: Pending) -> void:
 	var arm: int = p.arm
@@ -494,6 +519,14 @@ func origin_near(side: int, at: Vector2) -> Vector2:
 	return best
 
 func origin(side: int, arm: int, target: Vector2) -> Vector2:
+	# Drones take off from the side's launch sites while it has any.
+	if arm == LiteArm.DRONE:
+		var sites: Array[LiteBuilding] = []
+		for b: LiteBuilding in buildings:
+			if b.alive and b.side == side and b.kind == LiteKind.LAUNCHER and b.ready:
+				sites.append(b)
+		if not sites.is_empty():
+			return sites[_next(sites.size())].pos + Vector2(_r(-5, 5), _r(-5, 5))
 	_tmp.clear()
 	for r: LiteRegion in map.regions:
 		if r.side == side and not r.city and r.spots.size() > 0: _tmp.append(r)
@@ -662,9 +695,25 @@ func destroy(b: LiteBuilding, by: int, raid: LiteRaid) -> void:
 	var where: String = map.regions[b.region].name if b.region < map.regions.size() else ""
 	raid.destroyed.append("%s in %s" % [LiteGlyphs.name(b.kind), where])
 	events.append(LiteEvent.new(LiteEv.DESTROYED, b.side, b.region, b.pos, 0, b.kind))
+	if b.kind == LiteKind.DEPOT:
+		_secondary(b, by, raid)
 	if b.kind == LiteKind.CAPITAL and winner < 0:
 		winner = by
 		events.append(LiteEvent.new(LiteEv.GAME_OVER, by))
+
+## An ammo depot going up: blasts round it, and damage to every site in reach.
+func _secondary(b: LiteBuilding, by: int, raid: LiteRaid) -> void:
+	for k: int in 5:
+		var at: Vector2 = b.pos + Vector2(_rng.randf_range(4.0, 16.0), 0).rotated(_rng.randf() * TAU)
+		fx.append(LiteFx.new(LiteFxKind.BLAST, at, Vector2.ZERO, 0, 0.9 + k * 0.15, 14.0 + k * 2.0, by))
+	fx.append(LiteFx.new(LiteFxKind.SCORCH, b.pos, Vector2.ZERO, 0, 60.0, 26.0, by))
+	for o: LiteBuilding in buildings:
+		if o == b or not o.alive or o.kind == LiteKind.CAPITAL or o.pos.distance_to(b.pos) > LiteRules.DEPOT_BLAST:
+			continue
+		o.hp -= LiteRules.DEPOT_DAMAGE
+		o.flash = 1
+		if o.hp <= 0:
+			destroy(o, by, raid)
 
 func kill(w: LiteWeapon, by: int, shooter: LiteBuilding) -> void:
 	w.alive = false
@@ -693,6 +742,9 @@ func air_defence(dt: float) -> void:
 				b.reload = LiteRules.SAM_RELOAD
 		b.cool -= dt
 		if b.cool > 0: continue
+		if b.kind == LiteKind.SAM and time < sam_off_until[b.side]:
+			b.cool = 0.5
+			continue
 		var range: float = LiteRules.range(b.kind)
 		var best: LiteWeapon = null
 		var best_score: float = -_FLOAT_MAX
@@ -755,7 +807,7 @@ func move_interceptors(dt: float) -> void:
 			continue
 		i.pos = i.goal
 		i.alive = false
-		if i.target.alive and _rng.randf() < LiteRules.sam_pk(i.target.arm): kill(i.target, i.side, i.from)
+		if i.target.alive and _rng.randf() < minf(0.97, LiteRules.sam_pk(i.target.arm) * sam_bonus[i.side]): kill(i.target, i.side, i.from)
 		else:
 			if i.target.alive: i.target.engaged -= 1
 			fx.append(LiteFx.new(LiteFxKind.PUFF, i.pos, i.target.lift_vec() + i.target.off, 0, 0.45, 4, i.side))

@@ -9,6 +9,9 @@ static var difficulty: int = 1
 static var fullscreen: bool = false
 static var routes: bool = true
 static var ranges: bool = true
+## Whether the first-time tips have been shown, for a war and for the front.
+static var tips_war: bool = false
+static var tips_front: bool = false
 
 static func load() -> void:
 	var c:= ConfigFile.new()
@@ -20,6 +23,8 @@ static func load() -> void:
 	fullscreen = false
 	routes = bool(c.get_value("lite", "routes", routes))
 	ranges = bool(c.get_value("lite", "ranges", ranges))
+	tips_war = bool(c.get_value("lite", "tips_war", tips_war))
+	tips_front = bool(c.get_value("lite", "tips_front", tips_front))
 
 ## Until version 1.1 the project was called "Air Alert", and Godot keeps a
 ## desktop game's files in a folder named after the project: read the old one's
@@ -27,13 +32,20 @@ static func load() -> void:
 static func _old_path() -> String:
 	return OS.get_user_data_dir().get_base_dir().path_join("Air Alert").path_join(PATH.get_file())
 
+## A test run changes nothing on disk.
+static var dry: bool = false
+
 static func save() -> void:
+	if dry:
+		return
 	var c:= ConfigFile.new()
 	c.set_value("lite", "volume", volume)
 	c.set_value("lite", "difficulty", difficulty)
 	c.set_value("lite", "fullscreen", fullscreen)
 	c.set_value("lite", "routes", routes)
 	c.set_value("lite", "ranges", ranges)
+	c.set_value("lite", "tips_war", tips_war)
+	c.set_value("lite", "tips_front", tips_front)
 	c.save(PATH)
 
 static func apply_sound() -> void:

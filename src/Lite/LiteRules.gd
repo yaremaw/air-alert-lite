@@ -28,6 +28,12 @@ const GUN_INTERVAL: float = 0.45
 ## A SAM's top speed; it leaves the rail slower and accelerates (see sam_pace).
 const INTERCEPTOR_SPEED: float = 160.0
 const ALL_CLEAR_AFTER: float = 3.0
+## A destroyed ammo depot's secondary explosions: how far they reach, and the
+## damage they do to every site there.
+const DEPOT_BLAST: float = 34.0
+const DEPOT_DAMAGE: float = 2.0
+## While a side has a radar standing, its SAMs hit this much more often.
+const RADAR_PK: float = 1.2
 
 static func cost_kind(k: int) -> int:
 	match k:
@@ -48,6 +54,9 @@ static func max_hp(k: int) -> float:
 		LiteKind.CAPITAL: return 120.0
 		LiteKind.FACTORY: return 5.0
 		LiteKind.GUN: return 2.0
+		LiteKind.DEPOT: return 6.0
+		LiteKind.RADAR: return 3.0
+		LiteKind.LAUNCHER: return 4.0
 		_: return 3.0
 
 static func range(k: int) -> float:

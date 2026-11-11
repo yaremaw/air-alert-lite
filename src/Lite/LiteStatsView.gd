@@ -18,6 +18,9 @@ var _tabs: Array[LiteChip] = []
 var _close: LiteChip = null
 var _map_tex: ImageTexture = null
 var _heat_tex: ImageTexture = null
+## Where the routes went, in map units: the picture takes it in as well as
+## the land, so a route out over the sea is not cut off at the coast's box.
+var _heat_box: Rect2 = Rect2()
 var _panel: StyleBoxFlat = LiteGlyphs.box(LiteGlyphs.PAGE, LiteGlyphs.LINE, 16)
 var _card: StyleBoxFlat = LiteGlyphs.box(LiteGlyphs.PANEL, LiteGlyphs.LINE, 12)
 var _tile: StyleBoxFlat = LiteGlyphs.box(LiteGlyphs.PANEL_HI, LiteGlyphs.PANEL_HI, 8)
@@ -140,11 +143,14 @@ func _build_heat() -> void:
 	for f: float in v:
 		top = maxf(top, f)
 	var img: Image = Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	_heat_box = Rect2()
 	for y: int in h:
 		for x: int in w:
 			var t: float = sqrt(v[y * w + x] / top) if top > 0 else 0.0
 			if t < 0.04:
 				continue
+			var cell_box:= Rect2(x * LiteStats.CELL, y * LiteStats.CELL, LiteStats.CELL, LiteStats.CELL)
+			_heat_box = cell_box if _heat_box.size == Vector2.ZERO else _heat_box.merge(cell_box)
 			img.set_pixel(x, y, Color(heat_color(t), clampf(t * 1.8, 0, 0.92)))
 	_heat_tex = ImageTexture.create_from_image(img)
 
@@ -264,7 +270,11 @@ func _hours(card: Rect2, st: LiteStats) -> void:
 func _density(card: Rect2, st: LiteStats) -> void:
 	var c: Rect2 = _card_at(card, "Where they flew", "The brighter, the more enemy drones and missiles passed")
 	var list_w: float = 150.0
+	# The land and wherever the routes went, with a little sea round them.
 	var land: Rect2 = main.map.land_rect
+	if _heat_box.size != Vector2.ZERO:
+		land = land.merge(_heat_box)
+	land = land.grow(16).intersection(Rect2(0, 0, LiteMap.W, LiteMap.H))
 	var area:= Rect2(c.position, c.size - Vector2(list_w + 12, 22))
 	var k: float = minf(area.size.x / land.size.x, area.size.y / land.size.y)
 	var dst:= Rect2(area.get_center() - land.size * k / 2, land.size * k)

@@ -65,18 +65,56 @@ var map: LiteMap:
 func build() -> void:
 	var map_: LiteMap = map
 	var img: Image = Image.create_from_data(LiteMap.RW, LiteMap.RH, false, Image.FORMAT_R8, map_.ids)
-	_pal = Image.create_empty(256, 2, false, Image.FORMAT_RGBA8)
+	_pal = Image.create_empty(256, 3, false, Image.FORMAT_RGBA8)
 	_shown.resize(map_.regions.size())
 	for i: int in _shown.size():
 		_shown[i] = target(i)
 		_pal.set_pixel(i, 0, _shown[i])
 		_pal.set_pixel(i, 1, Color(map_.regions[i].side, 0, 0, 1))
+		_pal.set_pixel(i, 2, Color(i / 255.0, 0, 0, 1))
 	_pal_tex = ImageTexture.create_from_image(_pal)
+	# The world round the two countries, under everything.
+	if map_.world != null:
+		var wimg: Image = Image.create_from_data(LiteWorld.WW, LiteWorld.WH, false, Image.FORMAT_R8, map_.world.ids)
+		var wmat:= ShaderMaterial.new()
+		wmat.shader = load("res://src/Lite/lite_world.gdshader") as Shader
+		var wtex: ImageTexture = ImageTexture.create_from_image(wimg)
+		wmat.set_shader_parameter("ids", wtex)
+		wmat.set_shader_parameter("sea_col", LiteGlyphs.SEA)
+		wmat.set_shader_parameter("land_col", LiteGlyphs.NEUTRAL_LAND)
+		wmat.set_shader_parameter("line_col", LiteGlyphs.NEUTRAL_LINE)
+		wmat.set_shader_parameter("ours_col", LiteGlyphs.OUR_LAND.lerp(LiteGlyphs.NEUTRAL_LAND, 0.25))
+		wmat.set_shader_parameter("theirs_col", LiteGlyphs.ENEMY_LAND.lerp(LiteGlyphs.NEUTRAL_LAND, 0.2))
+		# An operation's map (towns marked) shows the war map's world enlarged.
+		wmat.set_shader_parameter("soft", 2 if map_.towns.size() > 0 else 0)
+		var ws: Sprite2D = Sprite2D.new()
+		ws.texture = wtex
+		ws.centered = false
+		ws.position = -LiteWorld.PAD
+		ws.scale = Vector2(LiteWorld.K, LiteWorld.K)
+		ws.material = wmat
+		ws.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		ws.show_behind_parent = true
+		add_child(ws)
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = load("res://src/Lite/lite_map.gdshader") as Shader
 	var ids: ImageTexture = ImageTexture.create_from_image(img)
 	mat.set_shader_parameter("ids", ids)
 	mat.set_shader_parameter("palette", _pal_tex)
+	# Districts, one per map unit; a map baked before them has none to draw.
+	var subs: Image
+	if map_.sub.size() == LiteMap.W * LiteMap.H:
+		subs = Image.create_from_data(LiteMap.W, LiteMap.H, false, Image.FORMAT_R8, map_.sub)
+	else:
+		subs = Image.create_empty(LiteMap.W, LiteMap.H, false, Image.FORMAT_R8)
+	mat.set_shader_parameter("subs", ImageTexture.create_from_image(subs))
+	if map_.world != null:
+		mat.set_shader_parameter("world", ImageTexture.create_from_image(Image.create_from_data(LiteWorld.WW, LiteWorld.WH, false, Image.FORMAT_R8, map_.world.ids)))
+		mat.set_shader_parameter("has_world", true)
+		mat.set_shader_parameter("world_pad", LiteWorld.PAD)
+		mat.set_shader_parameter("world_k", float(LiteWorld.K))
+		mat.set_shader_parameter("per_unit", float(LiteMap.S))
+		mat.set_shader_parameter("edge_col", LiteGlyphs.NEUTRAL_EDGE)
 	var sprite: Sprite2D = Sprite2D.new()
 	sprite.texture = ids
 	sprite.centered = false
@@ -205,15 +243,31 @@ func refresh_sides() -> void:
 		_pal.set_pixel(i, 1, Color(main.map.regions[i].side, 0, 0, 1))
 	_pal_tex.update(_pal)
 
+## The campaign's front: regions drawn as one, the provinces inside each in
+## fainter lines (palette row 2: each region's group).
+func set_groups(group_of: PackedInt32Array) -> void:
+	for i: int in main.map.regions.size():
+		var g: int = group_of[i] if i < group_of.size() and group_of[i] >= 0 else i
+		_pal.set_pixel(i, 2, Color(g / 255.0, 0, 0, 1))
+	_pal_tex.update(_pal)
+
 func target(i: int) -> Color:
 	var sim_: LiteSim = main.sim
 	var r: LiteRegion = main.map.regions[i]
 	var land: Color = LiteGlyphs.OUR_LAND if r.side == 0 else LiteGlyphs.ENEMY_LAND
 	var c: Color = land
-	# A campaign mission's province glows violet, gently pulsing, until it is decided.
+	# A campaign operation's province glows violet, gently pulsing, until it
+	# is decided; on the front, the provinces that can be attacked a little,
+	# the one picked more.
 	var m: LiteMission = main.mission
-	if m != null and m.result < 0 and main.map.province(i) == m.region:
-		c = c.lerp(LiteGlyphs.OBJECTIVE, 0.22 + 0.08 * sin(_clock * 2.6))
+	if m != null and m.result < 0 and main.map.focus.has(i):
+		c = c.lerp(LiteGlyphs.OBJECTIVE, 0.16 + 0.06 * sin(_clock * 2.6))
+	elif m == null and main.front_open:
+		var p: int = main.campaign.group_at(i) if main.campaign != null else main.map.province(i)
+		if p == main.front_pick:
+			c = c.lerp(LiteGlyphs.OBJECTIVE, 0.32 + 0.08 * sin(_clock * 2.6))
+		elif main.front_options.has(p):
+			c = c.lerp(LiteGlyphs.OBJECTIVE, 0.12)
 	if sim_.alert[i]:
 		if r.side == 0:
 			c = LiteGlyphs.MISSILE_ALERT if sim_.missile[i] else LiteGlyphs.AIR_ALERT
@@ -615,10 +669,36 @@ func _draw_top() -> void:
 	for s: LiteBuilding in sim_.buildings:
 		if s.alive and s.kind == LiteKind.CAPITAL:
 			LiteLabels.draw_label(_top, s.pos + Vector2(0, 26), main.map.capital_name[s.side], 12, LiteGlyphs.TEXT)
+	# On the front: a badge on each province that can be attacked, showing
+	# what it is; the enemy capital's with its defences.
+	if main.front_open and main.campaign != null:
+		for id: int in main.front_options:
+			var r: LiteRegion = main.map.regions[int(main.front_labels.get(id, id))]
+			var at: Vector2 = r.label + Vector2(0, -19)
+			var cap: bool = id == main.campaign.group_at(main.map.capital_province(1))
+			var glyph: int
+			if main.map.regions[id].side == 0:
+				glyph = LiteGlyph.SAM
+			elif cap:
+				glyph = LiteGlyph.CAPITAL
+			else:
+				glyph = LiteGlyphs.of(LiteMission.target_kinds(main.campaign.character(id))[0])
+			var picked: bool = id == main.front_pick
+			_top.draw_circle(at, 9.5, LiteGlyphs.PAGE, true, -1, true)
+			_top.draw_arc(at, 9.5, 0, TAU, 32, LiteGlyphs.OBJECTIVE if picked else Color(LiteGlyphs.OBJECTIVE, 0.6), 1.6 if picked else 1.2, true)
+			LiteGlyphs.draw_ci(_top, glyph, at, 0.8, Color.WHITE)
+			if cap:
+				_top.draw_string(LiteGlyphs.bold, at + Vector2(13, 4), "×%d" % main.campaign.capital_defence(main.map), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteGlyphs.TEXT)
+	# An operation's targets: a violet ring round each one still standing.
 	var m: LiteMission = main.mission
-	if m != null and m.result < 0 and m.kind != LiteMission.CAPITAL:
-		var word: String = "HOLD" if m.kind == LiteMission.HOLD else "OBJECTIVE"
-		LiteLabels.draw_label(_top, main.map.regions[m.region].label + Vector2(0, -15), word, 10, LiteGlyphs.OBJECTIVE)
+	if m != null and m.result < 0:
+		for t: LiteBuilding in m.targets:
+			if t.alive and shown(t):
+				var r: float = (15.0 if t.kind == LiteKind.CAPITAL else 12.5) + 1.2 * sin(_clock * 3.0)
+				_top.draw_arc(t.pos, r, 0, TAU, 40, Color(LiteGlyphs.OBJECTIVE, 0.9), 1.6, true)
+		# A convoy: a yellow ring, pulsing faster.
+		if m.convoy != null and m.convoy.alive:
+			_top.draw_arc(m.convoy.pos, 13.0 + 2.0 * sin(_clock * 6.0), 0, TAU, 40, Color(LiteGlyphs.YELLOW, 0.95), 1.8, true)
 	draw_tool()
 
 func draw_building(s: LiteBuilding) -> void:
@@ -821,7 +901,42 @@ func draw_fx(f: LiteFx) -> void:
 		LiteFxKind.LAUNCH:
 			b.ring(f.a, 2 + 9 * t, Color(LiteGlyphs.side_color(f.side), 0.6 * inv), 1.3)
 
+## Where a region's factory places are drawn: a row of squares under its
+## name, or above it, or further off, wherever the whole row lies inside the
+## region (a row spilling into the next region would be clicked as that one).
+func slot_row(r: LiteRegion, n: int) -> Vector2:
+	var map_: LiteMap = main.map
+	for off: Vector2 in [Vector2(0, 13), Vector2(0, -13), Vector2(0, 22), Vector2(0, -22), Vector2(0, 30)]:
+		var at: Vector2 = r.label + off + Vector2(-(n - 1) * 5.0, 0)
+		var inside: bool = true
+		for i: int in n:
+			var q: Vector2 = at + Vector2(i * 10.0, 0)
+			if map_.province(map_.region_at(q)) != r.id:
+				inside = false
+				break
+		if inside:
+			return at
+	return r.label + Vector2(-(n - 1) * 5.0, 13)
+
+## The region whose factory place (a square) is under `p`, or -1.
+func slot_region_at(p: Vector2) -> int:
+	var sim_: LiteSim = main.sim
+	for r: LiteRegion in main.map.regions:
+		if r.side != 0 or r.city:
+			continue
+		var n: int = sim_.slots[r.id]
+		if n == 0:
+			continue
+		var at: Vector2 = slot_row(r, n)
+		for i: int in n:
+			if (at + Vector2(i * 10.0, 0)).distance_to(p) < 7.0:
+				return r.id
+	return -1
+
 func draw_tool() -> void:
+	# Tools belong to a war under way (not to the front between operations).
+	if not main.started:
+		return
 	var p: Vector2 = main.mouse
 	var sim_: LiteSim = main.sim
 	var map_: LiteMap = main.map
@@ -833,7 +948,7 @@ func draw_tool() -> void:
 			var f: int = sim_.factories_in(r.id)
 			var ru: int = sim_.ruins_in(r.id)
 			var n: int = sim_.slots[r.id]
-			var at: Vector2 = r.label + Vector2(-(n - 1) * 5.0, 13)
+			var at: Vector2 = slot_row(r, n)
 			if n == 0:
 				_top.draw_string(LiteGlyphs.font, r.label + Vector2(-30, 18), "no room", HORIZONTAL_ALIGNMENT_CENTER, 60, 9, LiteGlyphs.FAINT)
 				continue

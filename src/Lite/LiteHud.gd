@@ -57,7 +57,6 @@ func _draw() -> void:
 func _draw_body() -> void:
 	if not main.started:
 		return
-	_draw_mission()
 	_draw_alert_card()
 	_draw_badge()
 	_draw_hint()
@@ -118,44 +117,6 @@ func _draw_alert_card() -> void:
 	draw_line(c, c + Vector2(4.5, 2.5), tone, 1.8, true)
 	draw_string(font, Vector2(rect.position.x + 52, rect.position.y + 24), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, tone if state > 0 else LiteGlyphs.TEXT)
 	draw_string(LiteGlyphs.font, Vector2(rect.position.x + 52, rect.position.y + 42), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
-
-## A campaign mission's card, top left: the goal and how far it has got, the
-## optional goal, and the time left.
-func _draw_mission() -> void:
-	_mission_right = 0.0
-	var m: LiteMission = main.mission
-	if m == null:
-		return
-	var sim: LiteSim = main.sim
-	var rows: Array = []
-	var goal_col: Color = LiteGlyphs.TEXT if m.result < 0 else (LiteGlyphs.GOOD if m.result == 0 else LiteGlyphs.ENEMY)
-	rows.append([m.goal_text(sim), m.goal_progress(sim), goal_col, 12, LiteGlyphs.bold])
-	if m.optional != LiteMission.NONE:
-		var oc: Color = LiteGlyphs.GOOD if m.optional_done else (LiteGlyphs.MUTED if m.optional_open() else LiteGlyphs.FAINT)
-		rows.append(["Optional: " + m.optional_text(true), m.optional_progress(), oc, 11, LiteGlyphs.font])
-	var left: String
-	if m.result < 0:
-		left = "%s left" % duration(m.time_left(sim))
-	else:
-		left = "Mission complete" if m.result == 0 else "Mission failed"
-	rows.append([left, "", LiteGlyphs.MUTED if m.result < 0 else goal_col, 11, LiteGlyphs.font])
-	var head: String = "MISSION %d · %s" % [m.number, m.title.to_upper()]
-	var w: float = LiteGlyphs.black.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	for r: Array in rows:
-		var f: Font = r[4]
-		w = maxf(w, f.get_string_size(r[0], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3]).x + 16 + f.get_string_size(r[1], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3]).x)
-	var rect:= Rect2(14, 14, w + 28, 34 + rows.size() * 18)
-	_mission_right = rect.end.x
-	_card.border_color = LiteGlyphs.LINE.lerp(LiteGlyphs.OBJECTIVE, 0.5)
-	draw_style_box(_card, rect)
-	draw_string(LiteGlyphs.black, Vector2(rect.position.x + 14, rect.position.y + 22), head, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.OBJECTIVE)
-	var y: float = rect.position.y + 42
-	for r: Array in rows:
-		var f: Font = r[4]
-		draw_string(f, Vector2(rect.position.x + 14, y), r[0], HORIZONTAL_ALIGNMENT_LEFT, -1, r[3], r[2])
-		if r[1] != "":
-			draw_string(LiteGlyphs.bold, Vector2(rect.end.x - 14, y), r[1], HORIZONTAL_ALIGNMENT_RIGHT, -1, r[3], r[2])
-		y += 18
 
 func _draw_badge() -> void:
 	var at:= Vector2(22, size.y - 58)

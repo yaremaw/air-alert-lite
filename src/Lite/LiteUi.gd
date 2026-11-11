@@ -33,6 +33,13 @@ var _debrief: Control = null
 var _debrief_title: Label = null
 var _debrief_text: Label = null
 var _debrief_next: Button = null
+var _front: Control = null
+var _op_card: LiteOpCard = null
+var _withdraw: LiteChip = null
+var tutorial: LiteTutorial = null
+var _front_box: VBoxContainer = null
+var _loading: Control = null
+var _loading_text: Label = null
 
 var menu_open: bool:
 	get: return _menu.visible or _new_game.visible or _settings.visible or stats_view.visible or briefing_open or _debrief.visible
@@ -88,6 +95,24 @@ func build() -> void:
 	status.main = main
 	status.custom_minimum_size = Vector2(0, 156)
 	vb.add_child(status)
+	var op:= LiteOpCard.new()
+	op.main = main
+	op.visible = false
+	vb.add_child(op)
+	_op_card = op
+	# Calling an attack off: a second click to be sure.
+	_withdraw = LiteChip.new()
+	_withdraw.text = "Withdraw"
+	_withdraw.font_size = 11
+	_withdraw.tooltip_text = "Call the operation off. It counts as failed."
+	_withdraw.clicked = func() -> void:
+		if _withdraw.text == "Withdraw":
+			_withdraw.text = "Click again to withdraw"
+			main.audio.click()
+		else:
+			_withdraw.text = "Withdraw"
+			main.withdraw_operation()
+	vb.add_child(_withdraw)
 
 	vb.add_child(_section("BUILD", "on your territory"))
 	var row: HBoxContainer = _row(vb)
@@ -195,11 +220,16 @@ func build() -> void:
 	_settings = _build_settings(root)
 	_campaign = _build_campaign(root)
 	_briefing = _build_briefing(root)
+	_front = _build_front(root)
+	_loading = _build_loading(root)
 	_debrief = _build_debrief(root)
 	_end = _build_end(root)
 	stats_view = LiteStatsView.new()
 	stats_view.main = main
 	root.add_child(stats_view)
+	tutorial = LiteTutorial.new()
+	tutorial.main = main
+	root.add_child(tutorial)
 
 static func _row(parent: Control) -> HBoxContainer:
 	var row:= HBoxContainer.new()
@@ -372,6 +402,12 @@ func _build_settings(root: Control) -> Control:
 		LiteSettings.apply_window())
 	_choice(box, "Weapon routes", ["Shown", "Hidden"], _routes, func(i: int) -> void: LiteSettings.routes = i == 0)
 	_choice(box, "Air defence ranges", ["Shown", "Hidden"], _ranges, func(i: int) -> void: LiteSettings.ranges = i == 0)
+	var tips: Dictionary = {}
+	tips["button"] = _wide(box, "Show the tips again", false, func() -> void:
+		LiteSettings.tips_war = false
+		LiteSettings.tips_front = false
+		LiteSettings.save()
+		(tips["button"] as Button).text = "The tips will show in your next war")
 	_wide(box, "Back", false, func() -> void: _show_screen(_menu))
 	return o
 
@@ -419,12 +455,12 @@ func _build_campaign(root: Control) -> Control:
 	var box: VBoxContainer = ob[1]
 	_title(box, "Campaign")
 	box.add_child(_text(
-		"One war, fought as three missions on one map, a few days apart.\n\n" +
-		"•  Each mission is a fight over one province, with a goal and a deadline.\n" +
-		"•  Take a province and the front moves forward. Fail, and the enemy pushes back and takes one of yours.\n" +
-		"•  Your sites, their damage and up to $600 of your money carry over to the next mission.\n" +
-		"•  Whoever loses a province rallies in the next mission.\n" +
-		"•  If either capital falls, the campaign ends there.",
+		"One war, fought province by province.\n\n" +
+		"•  Between operations you see the front, and choose which enemy province to attack next.\n" +
+		"•  Each operation is fought on that province's own map, district by district, against its targets: depots, radars, drone launch sites, factories.\n" +
+		"•  Take a province and what it was works for you: its industry, its depots, or the air base the enemy loses.\n" +
+		"•  Now and then the enemy strikes back at one of yours, and it has to be held.\n" +
+		"•  Take the enemy's capital province to win; lose yours and the war is lost.",
 		13, LiteGlyphs.MUTED))
 	var row: HBoxContainer = _row(box)
 	var names: Array[String] = ["Easy", "Normal", "Hard"]
@@ -454,10 +490,129 @@ func show_campaign() -> void:
 	var saved: LiteCampaign = LiteCampaign.load_saved()
 	_campaign_go.visible = saved != null
 	if saved != null:
-		_campaign_go.text = "Continue · mission %d of %d" % [saved.mission + 1, LiteCampaign.MISSIONS.size()]
+		_campaign_go.text = "Continue · operation %d" % (saved.ops + 1)
 	_quiet(_campaign_new, saved != null)
 	_campaign_new.text = "New campaign" if saved == null else "Start over"
 	_show_screen(_campaign)
+
+## The front between a campaign's operations: a panel on the right, over
+## the war panel's place, the map left free to pick provinces on.
+func _build_front(root: Control) -> Control:
+	var panel:= PanelContainer.new()
+	panel.visible = false
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	panel.anchor_left = 1; panel.anchor_right = 1; panel.anchor_top = 0; panel.anchor_bottom = 1
+	panel.offset_left = -330; panel.offset_right = -10; panel.offset_top = 10; panel.offset_bottom = -10
+	panel.add_theme_stylebox_override("panel", LiteGlyphs.box(LiteGlyphs.PANEL, LiteGlyphs.OBJECTIVE.darkened(0.3), 14, 18))
+	var scroll:= ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	_front_box = VBoxContainer.new()
+	_front_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_front_box.add_theme_constant_override("separation", 9)
+	scroll.add_child(_front_box)
+	root.add_child(panel)
+	return panel
+
+func show_front(c: LiteCampaign) -> void:
+	for n: Node in _front_box.get_children():
+		_front_box.remove_child(n)
+		n.queue_free()
+	var box: VBoxContainer = _front_box
+	var war: LiteMap = main.war_map
+	var head:= _text("OPERATION %d OF %d  ·  %s" % [c.ops + 1, LiteCampaign.MAX_OPS, main.clock_text(0.0, true).to_upper()], 11, LiteGlyphs.OBJECTIVE, true)
+	head.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(head)
+	var holding: bool = c.counter >= 0
+	var t:= _text("Hold the line" if holding else "Next operation", 26, LiteGlyphs.TEXT, true)
+	t.add_theme_font_override("font", LiteGlyphs.black)
+	box.add_child(t)
+	if holding:
+		box.add_child(_text("The enemy is attacking %s." % c.group_name(war, c.counter), 12, LiteGlyphs.ENEMY))
+	var d: int = c.capital_defence(war)
+	box.add_child(_text("%s: %d SAM batteries. Each region round it you take removes one." % [war.capital_name[1], d], 11, LiteGlyphs.MUTED))
+	for id: int in main.front_options:
+		var picked: bool = id == main.front_pick
+		var kind: String = "Defend" if war.regions[id].side == 0 else ("Capital" if id == c.group_at(war.capital_province(1)) else LiteMission.character_short(c.character(id)))
+		var label: String = "%s  ·  %s" % [c.group_name(war, id), kind]
+		var pid: int = id
+		var b: Button = _wide(box, label, picked, func() -> void: main.pick_front(pid))
+		b.custom_minimum_size = Vector2(0, 36)
+		b.add_theme_font_size_override("font_size", 13)
+	if main.front_pick >= 0:
+		var m: LiteMission = c.make_op(war, main.front_pick)
+		box.add_child(_section(m.title.to_upper(), ""))
+		box.add_child(_text(m.summary(), 12, LiteGlyphs.TEXT))
+		if m.kind == LiteMission.STRIKE:
+			box.add_child(LiteIconList.of_kinds(LiteMission.target_kinds(m.character)))
+			box.add_child(_text("Reward: " + LiteMission.character_gain(m.character), 12, LiteGlyphs.GOOD))
+		_wide(box, "Launch operation", true, main.launch_operation)
+	_wide(box, "Main menu", false, func() -> void:
+		close_front()
+		main.to_title())
+	_front.visible = true
+
+func close_front() -> void:
+	_front.visible = false
+
+## A notice over everything while an operation's map is built.
+func _build_loading(root: Control) -> Control:
+	var ob: Array = _overlay(root, 420)
+	_loading_text = _text("", 16, LiteGlyphs.TEXT, true)
+	(ob[1] as VBoxContainer).add_child(_loading_text)
+	(ob[1] as VBoxContainer).add_child(_text("Drawing the province's map and its districts…", 12, LiteGlyphs.MUTED))
+	return ob[0]
+
+func show_loading(text: String) -> void:
+	_loading_text.text = text
+	_loading.visible = true
+
+func close_loading() -> void:
+	_loading.visible = false
+
+## The first-time tips for a war (and an operation's goal in the campaign).
+func tips_war() -> void:
+	if LiteSettings.tips_war or tutorial.running:
+		return
+	var m: LiteMission = main.mission
+	var cap: Vector2 = main.to_screen(main.sim.sides[0].capital.pos)
+	var steps: Array = []
+	steps.append(["Your country", "Defend it from drones and missiles. Destroy the enemy capital to win." if m == null
+		else "Defend it, and destroy the ringed targets before time runs out.",
+		func() -> Rect2: return Rect2(cap - Vector2(26, 26), Vector2(52, 52)), null, ""])
+	if m != null:
+		steps.append(["The goal", "Targets, time left and events are here.",
+			func() -> Rect2: return _op_card.get_global_rect(), null, ""])
+	steps.append(["Factories", "They earn money. Build them on the green squares.",
+		func() -> Rect2: return _build[0].get_global_rect(),
+		func() -> void: main.build_tool = LiteKind.FACTORY, ""])
+	steps.append(["Air defence", "AA guns and SAMs shoot down what flies into their circle.",
+		func() -> Rect2: return _build[1].get_global_rect().merge(_build[2].get_global_rect()), null, ""])
+	steps.append(["Strike back", "Pick a weapon, then click enemy land. Hold and drag to draw its route.",
+		func() -> Rect2: return _strike[0].get_global_rect().merge(_strike[2].get_global_rect()), null, "route"])
+	steps.append(["Air alerts", "Yellow: drones overhead. Red: missiles. Factories slow down under alert.",
+		func() -> Rect2: return Rect2(LiteMap.W / 2.0 - 120, 14, 240, 54), null, ""])
+	steps.append(["Time", "Space pauses. 1×, 2× and 3× set the speed.",
+		func() -> Rect2: return _speed[0].get_global_rect().merge(_speed[3].get_global_rect()), null, ""])
+	tutorial.run(steps, func() -> void:
+		LiteSettings.tips_war = true
+		LiteSettings.save())
+
+## The first-time tips for the campaign's front.
+func tips_front() -> void:
+	if LiteSettings.tips_front or tutorial.running:
+		return
+	var war: LiteMap = main.war_map
+	var cap: Vector2 = main.to_screen(war.regions[war.capital_province(1)].label)
+	var steps: Array = [
+		["The front", "Pick the next region to attack, here or on the map. Its badge shows what is there.",
+			func() -> Rect2: return _front.get_global_rect(), null, ""],
+		["The enemy capital", "Taking it wins the war. Each region round it you take removes one of its SAM batteries.",
+			func() -> Rect2: return Rect2(cap - Vector2(30, 30), Vector2(60, 60)), null, ""],
+	]
+	tutorial.run(steps, func() -> void:
+		LiteSettings.tips_front = true
+		LiteSettings.save())
 
 ## A side overlay over the panel, leaving the map in view: the briefing and the
 ## debrief, so the province fought over can be seen on the map beside them.
@@ -493,27 +648,23 @@ func show_briefing(m: LiteMission, c: LiteCampaign) -> void:
 		_brief_box.remove_child(n)
 		n.queue_free()
 	var box: VBoxContainer = _brief_box
-	var head:= _text("MISSION %d OF %d  ·  %s" % [m.number, LiteCampaign.MISSIONS.size(), main.clock_text(0.0, true).to_upper()], 11, LiteGlyphs.OBJECTIVE, true)
+	var head:= _text("OPERATION %d  ·  %s" % [m.number, main.clock_text(0.0, true).to_upper()], 11, LiteGlyphs.OBJECTIVE, true)
 	head.add_theme_font_override("font", LiteGlyphs.black)
 	box.add_child(head)
-	var t:= _text(m.title, 30, LiteGlyphs.TEXT, true)
+	var t:= _text(m.title, 28, LiteGlyphs.TEXT, true)
 	t.add_theme_font_override("font", LiteGlyphs.black)
 	box.add_child(t)
-	box.add_child(_text(m.briefing, 13, LiteGlyphs.MUTED))
-	box.add_child(_section("GOAL", "%s" % LiteHud.duration(m.length)))
-	box.add_child(_text(m.goal_text(main.sim), 14, LiteGlyphs.TEXT, true))
+	box.add_child(_text(m.summary(), 14, LiteGlyphs.TEXT))
+	if m.kind != LiteMission.HOLD:
+		var kinds: Array[int] = []
+		for b: LiteBuilding in m.targets:
+			kinds.append(b.kind)
+		box.add_child(LiteIconList.of_kinds(kinds))
+	if m.kind == LiteMission.STRIKE:
+		box.add_child(_text("Reward: " + LiteMission.character_gain(m.character), 12, LiteGlyphs.GOOD))
 	if m.optional != LiteMission.NONE:
-		box.add_child(_text("Optional: " + m.optional_text(), 12, LiteGlyphs.MUTED))
-	if m.notes.size() > 0:
-		box.add_child(_section("THIS MISSION", ""))
-		for n: String in m.notes:
-			box.add_child(_text("•  " + n, 12, LiteGlyphs.MUTED))
-	if c.history.size() > 0:
-		box.add_child(_section("SO FAR", ""))
-		for h: String in c.history:
-			box.add_child(_text(h, 11, LiteGlyphs.FAINT))
+		box.add_child(_text("Optional: " + m.optional_text(true), 12, LiteGlyphs.MUTED))
 	_wide(box, "Begin", true, main.launch_mission)
-	box.add_child(_text("Enter to begin  ·  the war waits until you do", 11, LiteGlyphs.FAINT))
 	_briefing.visible = true
 
 func close_briefing() -> void:
@@ -528,7 +679,7 @@ func _build_debrief(root: Control) -> Control:
 	_debrief_text = _text("", 13, LiteGlyphs.MUTED)
 	box.add_child(_debrief_title)
 	box.add_child(_debrief_text)
-	_debrief_next = _wide(box, "Next mission", true, main.next_mission)
+	_debrief_next = _wide(box, "Back to the front", true, main.next_mission)
 	_wide(box, "Statistics", false, func() -> void: show_stats())
 	_wide(box, "Main menu", false, func() -> void:
 		_debrief.visible = false
@@ -551,15 +702,20 @@ func _show_screen(screen: Control) -> void:
 	_new_game.visible = screen == _new_game
 	_settings.visible = screen == _settings
 	_campaign.visible = screen == _campaign
+	# The front panel shows again once the menus are closed.
+	if _front != null:
+		_front.visible = screen == null and main.front_open
 
 func show_menu() -> void:
 	if main.started and main.sim.winner >= 0:
 		main.to_title()          # after a war ends, back to the home screen's own war
 		return
-	var live: bool = main.started
+	var live: bool = main.started or main.front_open
 	var sub: String = "A real-time air war on a live air-alert map."
-	if live and main.mission != null:
-		sub = "Campaign, mission %d: %s · paused · %s" % [main.mission.number, main.mission.title, main.clock_text(main.sim.time, true)]
+	if main.front_open:
+		sub = "Campaign · at the front · %s" % main.clock_text(0.0, true)
+	elif live and main.mission != null:
+		sub = "Campaign, operation %d: %s · paused · %s" % [main.mission.number, main.mission.title, main.clock_text(main.sim.time, true)]
 	elif live:
 		sub = "The war is paused · %s" % main.clock_text(main.sim.time, true)
 	home.set_live(live, sub)
@@ -594,7 +750,7 @@ func back() -> void:
 		stats_view.visible = false
 	elif _new_game.visible or _settings.visible or _campaign.visible:
 		_show_screen(_menu)
-	elif _menu.visible and main.started and main.sim.winner < 0:
+	elif _menu.visible and (main.started or main.front_open) and main.sim.winner < 0:
 		close_menu()
 
 func show_end(won: bool, stats: String) -> void:
@@ -656,6 +812,10 @@ func _process(_delta: float) -> void:
 		_routes[i].selected = LiteSettings.routes == (i == 0)
 		_ranges[i].selected = LiteSettings.ranges == (i == 0)
 	_panel.visible = main.started and not home_open
+	var m: LiteMission = main.mission
+	_withdraw.visible = m != null and main.started and m.result < 0 and not m.timed
+	if not _withdraw.visible:
+		_withdraw.text = "Withdraw"
 	hud.visible = not home_open
 	for i in 4:
 		_speed[i].selected = main.paused if i == 0 else (not main.paused and main.speed == SPEEDS[i])

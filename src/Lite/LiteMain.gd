@@ -38,6 +38,14 @@ var mission: LiteMission = null
 ## one mission to the next.
 var clock_offset: float = 0.0
 var _debrief_timer: float = -1
+## The campaign's front: the war's map between operations, the provinces that
+## can be attacked from it (or must be held), and the one picked.
+var war_map: LiteMap = null
+var front_open: bool = false
+var front_options: Array[int] = []
+var front_pick: int = -1
+## On the front, each region's province its name (and badge) is on.
+var front_labels: Dictionary = {}
 
 
 ## The enemy's income on Easy, Normal and Hard. Hard was 1.3 until the maps
@@ -70,6 +78,9 @@ func _ready() -> void:
 		if a.begins_with("--lite-maps=") and a.substr(12).is_valid_int():
 			maps = a.substr(12).to_int()
 			LiteMap.use_baked = "--lite-baked" in OS.get_cmdline_user_args()
+		if a == "--lite-audit":
+			audit()
+			return
 		if a == "--lite-repack":
 			repack()
 			return
@@ -95,6 +106,10 @@ func _ready() -> void:
 	if shots != null:
 		run_shots(shots, maps)
 	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-tips-shot="):
+			tips_shots(a.substr(17).lstrip("\"").rstrip("\""))
+		if a.begins_with("--lite-region-shot="):
+			region_shots(a.substr(19).lstrip("\"").rstrip("\""))
 		if a.begins_with("--lite-campaign="):
 			run_campaign(a.substr(16).lstrip("\"").rstrip("\""))
 	# The web build's benchmark: open the page with ?bench to play a war on
@@ -113,6 +128,94 @@ func bake(n: int) -> void:
 		print("[bake] %s: %d regions, %d ms, %s" % [path, m.regions.size(), Time.get_ticks_msec() - t0, error_string(m.save_baked(path))])
 	get_tree().quit()
 
+## Province shapes on every baked map (or `--lite-seeds=N` fresh ones with
+## `--lite-fresh`): each map's thinnest provinces, and how many are slivers.
+func audit() -> void:
+	var fresh: bool = "--lite-fresh" in OS.get_cmdline_user_args()
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-audit-seed="):
+			var m: LiteMap = LiteMap.generate(a.substr(18).to_int())
+			for r: LiteRegion in m.regions:
+				print("[audit] %d %s side %d area %d" % [r.id, r.name, r.side, r.area])
+			var img:= Image.create(LiteMap.RW, LiteMap.RH, false, Image.FORMAT_RGB8)
+			var rng:= RandomNumberGenerator.new()
+			var cols: Array[Color] = []
+			for r: LiteRegion in m.regions:
+				cols.append(Color.from_hsv(rng.randf(), 0.5, 0.45 if r.side == 1 else 0.85))
+			for y: int in LiteMap.RH:
+				for x: int in LiteMap.RW:
+					var id: int = m.ids[y * LiteMap.RW + x]
+					img.set_pixel(x, y, Color.BLACK if id == LiteMap.NONE else cols[id])
+			for a2: String in OS.get_cmdline_user_args():
+				if a2.begins_with("--lite-shot="):
+					img.save_png(a2.substr(12).path_join("regions_%d.png" % m.seed))
+			get_tree().quit()
+			return
+	var n: int = LiteMap.baked_count()
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-seeds=") and a.substr(13).is_valid_int():
+			n = a.substr(13).to_int()
+	if "--lite-check-maps" in OS.get_cmdline_user_args():
+		var old: int = 0
+		for k: int in n:
+			var m: LiteMap = LiteMap.load_baked(k)
+			var fresh_: bool = m != null and m.world != null and m.sub.size() == LiteMap.W * LiteMap.H
+			if not fresh_:
+				old += 1
+				print("[check] map %d is OLD (world %s, districts %d)" % [k, m.world != null if m != null else false, m.sub.size() if m != null else -1])
+		print("[check] %d of %d maps old" % [old, n])
+		get_tree().quit()
+		return
+	if "--lite-rects" in OS.get_cmdline_user_args():
+		for k: int in n:
+			var m: LiteMap = LiteMap.load_baked(k)
+			var lo:= Vector2(LiteMap.W, LiteMap.H)
+			var hi:= Vector2.ZERO
+			for y: int in LiteMap.H:
+				for x: int in LiteMap.W:
+					if m.cell[y * LiteMap.W + x] != LiteMap.NONE:
+						lo = lo.min(Vector2(x, y))
+						hi = hi.max(Vector2(x + 1, y + 1))
+			print("[rects] map %d saved %s real %s" % [k, m.land_rect, Rect2(lo, hi - lo)])
+		get_tree().quit()
+		return
+	var slivers: int = 0
+	var all: int = 0
+	for k: int in n:
+		var m: LiteMap = LiteMap.generate(1000 + k * 7919) if fresh else LiteMap.load_baked(k)
+		var worst: Array = m.shapes()
+		worst.sort_custom(func(a: Array, b: Array) -> bool: return a[1] > b[1])
+		var bad: PackedStringArray = PackedStringArray()
+		for w: Array in worst:
+			all += 1
+			if w[1] > 4.0:
+				slivers += 1
+				bad.append("%s %.1f (r %d, %s)" % [m.regions[w[0]].name, w[1], roundi(w[2]), "ours" if m.regions[w[0]].side == 0 else "theirs"])
+		# Water between the two countries (a gap in the frontier), and how much
+		# of the map the land fills.
+		var gaps: int = 0
+		var land_n: int = 0
+		for y: int in range(2, LiteMap.RH - 2):
+			for x: int in range(2, LiteMap.RW - 2):
+				var id: int = m.ids[y * LiteMap.RW + x]
+				if id != LiteMap.NONE:
+					land_n += 1
+					continue
+				var seen: Array[bool] = [false, false]
+				for d: Vector2i in [Vector2i(2, 0), Vector2i(-2, 0), Vector2i(0, 2), Vector2i(0, -2)]:
+					var o: int = m.ids[(y + d.y) * LiteMap.RW + x + d.x]
+					if o != LiteMap.NONE:
+						seen[m.regions[o].side] = true
+				if seen[0] and seen[1]:
+					gaps += 1
+		print("[audit] map %d: frontier gaps %d texels, land %d%% of the map" % [k, gaps, roundi(100.0 * land_n / (LiteMap.RW * LiteMap.RH))])
+		var names: PackedStringArray = PackedStringArray()
+		for r: LiteRegion in m.regions:
+			names.append(r.name)
+		print("[audit] map %d: worst %.1f · slivers: %s · %s" % [k, worst[0][1], ", ".join(bad) if bad.size() > 0 else "none", " ".join(names)])
+	print("[audit] %d of %d provinces thinner than 4" % [slivers, all])
+	get_tree().quit()
+
 ## Saves the baked maps again in the current file format.
 func repack() -> void:
 	for k: int in LiteMap.baked_count():
@@ -121,17 +224,17 @@ func repack() -> void:
 		print("[repack] %s: %s" % [path, error_string(m.save_baked(path)) if m != null else "unreadable"])
 	get_tree().quit()
 
-func new_world(seed_: int, campaign_: LiteCampaign = null) -> void:
+func new_world(seed_: int) -> void:
 	seed = seed_
 	var t0: int = Time.get_ticks_msec()
-	map = LiteMap.for_seed(seed_)
-	if campaign_ != null:
-		campaign_.apply_map(map)
-	sim = LiteSim.new(map, seed_ + (campaign_.mission * 977 if campaign_ != null else 0))
-	if campaign_ != null and not campaign_.sites.is_empty():
-		sim.restore(campaign_.sites)
+	show_map(LiteMap.for_seed(seed_), seed_, t0)
+
+## Puts a map up for a war: a new war on it and the view to show it.
+func show_map(m: LiteMap, sim_seed: int, t0: int = 0) -> void:
+	map = m
+	sim = LiteSim.new(map, sim_seed)
 	gun_shot_at = [-99.0, -99.0]
-	print("[lite] map %d: %d regions in %d ms" % [seed_, map.regions.size(), Time.get_ticks_msec() - t0])
+	print("[lite] map %d: %d regions in %d ms" % [sim_seed, map.regions.size(), Time.get_ticks_msec() - t0])
 	if _view != null:
 		_view.queue_free()
 	_view = LiteView.new()
@@ -168,6 +271,10 @@ func to_title() -> void:
 func _leave_campaign() -> void:
 	campaign = null
 	mission = null
+	war_map = null
+	front_open = false
+	front_pick = -1
+	front_options = []
 	clock_offset = 0.0
 	_debrief_timer = -1
 
@@ -182,6 +289,8 @@ func new_game() -> void:
 	_start_war(LiteSettings.difficulty)
 	paused = false
 	ui.post("War. The enemy capital is %s; its factories repair it. Its other sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
+	if not _autoplay:
+		ui.tips_war()
 
 func _start_war(d: int) -> void:
 	started = true
@@ -189,7 +298,7 @@ func _start_war(d: int) -> void:
 	strike_tool = null
 	_end_timer = -1
 	sim.income_scale[1] = ENEMY_INCOME[d]
-	var ai: LiteAi = LiteAi.new(1, seed + 1 + (campaign.mission * 13 if campaign != null else 0), 22.0)
+	var ai: LiteAi = LiteAi.new(1, seed + 1 + (campaign.ops * 13 if campaign != null else 0), 22.0)
 	ai.war_share = ENEMY_WAR_SHARE[d]
 	ai.tempo = ENEMY_TEMPO[d]
 	ai.smart = d > 0
@@ -203,56 +312,148 @@ func _start_war(d: int) -> void:
 	ui.clear_feed()
 	audio.click()
 
-## A campaign from its first mission, or the saved one from where it was left.
-func start_campaign(fresh: bool) -> void:
+## A campaign from its start, or the saved one from where it was left: the
+## front first.
+func start_campaign(fresh: bool, map_seed: int = -1) -> void:
 	if fresh:
 		LiteCampaign.forget()
-		var c: LiteCampaign = LiteCampaign.fresh(int(fmod(Time.get_unix_time_from_system(), 1000003.0)), LiteSettings.difficulty)
+		var c: LiteCampaign = LiteCampaign.fresh(map_seed if map_seed >= 0 else int(fmod(Time.get_unix_time_from_system(), 1000003.0)), LiteSettings.difficulty)
 		c.save()
 		campaign = c
 	else:
 		campaign = LiteCampaign.load_saved()
 		if campaign == null:
 			return
-	begin_mission()
+	show_front()
 
-## The next mission: the campaign's map as it stands, its sites, then the
-## briefing over the map with the war paused until it is closed.
-func begin_mission() -> void:
+## The front between operations: the war's map as the campaign has left it,
+## no war on it, the provinces that can be attacked (or the one that must be
+## held) glowing, and the panel to choose from.
+func show_front() -> void:
 	var c: LiteCampaign = campaign
-	new_world(c.map_seed, c)
+	ui.close_menu()
+	mission = null
+	started = false
+	build_tool = null
+	strike_tool = null
+	drawing = null
+	paused = true
+	_debrief_timer = -1
+	seed = c.map_seed
+	war_map = LiteMap.for_seed(c.map_seed)
+	c.make_groups(war_map)
+	c.apply_map(war_map)
+	show_map(war_map, c.map_seed)
+	# Only the capitals stand on it: sites belong to an operation's map.
+	var keep: Array[LiteBuilding] = []
+	for b: LiteBuilding in sim.buildings:
+		if b.kind == LiteKind.CAPITAL:
+			keep.append(b)
+	sim.buildings = keep
 	clock_offset = c.clock
-	mission = c.make_mission(map)
+	front_open = true
+	front_options = c.options(war_map)
+	front_pick = front_options[0] if not front_options.is_empty() else -1
+	# The front shows the campaign's regions: one name each, the provinces
+	# inside them in faint lines.
+	front_labels = c.label_groups(war_map)
+	_view.set_groups(c.group_of)
+	ui.clear_feed()
+	ui.show_front(c)
+	if not _autoplay:
+		ui.tips_front()
+
+## The province picked on the front (from the list or the map).
+func pick_front(province: int) -> void:
+	if front_options.has(province):
+		front_pick = province
+		ui.show_front(campaign)
+		audio.click()
+
+## An operation over the picked province: its map built (a few seconds, with
+## a notice up meanwhile), the war set up on it, then the briefing.
+func launch_operation() -> void:
+	var c: LiteCampaign = campaign
+	var province: int = front_pick
+	if province < 0:
+		return
+	ui.close_front()
+	ui.show_loading("Preparing the operation in %s…" % war_map.regions[province].name)
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	var m: LiteMap = await LiteRegionMap.build(war_map, c.group(province), province, c.map_seed * 131 + c.ops * 17 + province, self)
+	ui.close_loading()
+	if m == null:
+		ui.show_front(c)
+		refuse("No operation is possible there")
+		return
+	front_open = false
+	mission = c.make_op(war_map, province)
+	show_map(m, c.map_seed + c.ops * 977)
 	_start_war(c.difficulty)
 	c.setup(mission, sim, sim.ai[1])
 	paused = true
-	ui.post("Mission %d: %s. %s" % [mission.number, mission.title, mission.goal_text(sim)], LiteGlyphs.OBJECTIVE)
+	ui.post("%s. %s" % [mission.title, mission.goal_text(sim)], LiteGlyphs.OBJECTIVE)
 	ui.show_briefing(mission, c)
 
-## Closes the briefing and starts the mission's clock.
+## Closes the briefing and starts the operation's clock.
 func launch_mission() -> void:
 	ui.close_briefing()
 	paused = false
 	audio.click()
+	if not _autoplay:
+		ui.tips_war()
 
-## The mission is over: the province changes hands on the map at once, then
-## the debrief.
+## The operation's events, as their times come.
+func _operation_events() -> void:
+	var m: LiteMission = mission
+	while not m.events.is_empty() and sim.time >= float(m.events[0][0]):
+		var e: int = m.events[0][1]
+		m.events.remove_at(0)
+		LiteCampaign.happen(m, e, sim)
+		ui.post(LiteMission.event_text(e), LiteGlyphs.YELLOW)
+		ui.hud.message(LiteMission.event_text(e))
+		audio.click()
+	# A convoy: destroyed in time pays; missed, it is gone.
+	if m.convoy != null:
+		if not m.convoy.alive:
+			sim.sides[0].money += LiteMission.CONVOY_REWARD
+			ui.post("Convoy destroyed: +$%d." % LiteMission.CONVOY_REWARD, LiteGlyphs.GOOD)
+			m.convoy = null
+		elif sim.time > m.convoy_until:
+			m.convoy.alive = false
+			m.convoy.dead_at = sim.time
+			ui.post("The convoy got away.", LiteGlyphs.MUTED)
+			m.convoy = null
+
+## The operation called off (the Withdraw button): it counts as failed.
+func withdraw_operation() -> void:
+	if mission == null or mission.result >= 0 or not started:
+		return
+	mission.withdraw()
+	end_mission()
+
+## The operation is over: the province's districts change hands on its map
+## at once (taken, or lost), then the debrief.
 func end_mission() -> void:
 	var m: LiteMission = mission
-	var changed: Array[int] = campaign.outcome(m, map)
-	if changed[0] >= 0:
-		var id: int = changed[0]
-		var to: int = changed[1]
-		sim.hand_over(id, to)
+	var to: int = -1
+	if m.result == 0 and m.kind != LiteMission.HOLD:
+		to = 0
+	elif m.result == 1 and m.kind == LiteMission.HOLD:
+		to = 1
+	if to >= 0:
+		for id: int in map.focus:
+			sim.hand_over(id, to)
 		_view.refresh_sides()
 		if to == 0:
-			ui.post("Our troops take %s. The front moves forward." % map.regions[id].name, LiteGlyphs.GOOD)
+			ui.post("Our troops take %s. The front moves forward." % m.region_name, LiteGlyphs.GOOD)
 		else:
-			ui.post("The enemy takes %s. The front moves back." % map.regions[id].name, LiteGlyphs.ENEMY)
+			ui.post("The enemy takes %s. The front moves back." % m.region_name, LiteGlyphs.ENEMY)
 		audio.play("explosion_b.wav", -9.0)
 	else:
 		ui.post(m.outcome, LiteGlyphs.GOOD if m.result == 0 else LiteGlyphs.ENEMY)
-	campaign.after(m, sim, changed)
+	campaign.after(m, war_map, sim)
 	build_tool = null
 	strike_tool = null
 	_debrief_timer = 2.5
@@ -265,19 +466,23 @@ func show_debrief() -> void:
 	if m.optional != LiteMission.NONE:
 		lines.append(("Optional goal met: %s." if m.optional_done else "Optional goal missed: %s.") % m.optional_text().to_lower())
 	lines.append("Provinces taken: %d · lost: %d" % [c.taken[0], c.taken[1]])
+	if c.counter >= 0:
+		lines.append("")
+		lines.append("The enemy strikes back at %s: it has to be held next." % c.group_name(war_map, c.counter))
 	if c.finished:
 		LiteCampaign.forget()
-		var won: bool = c.results[c.results.size() - 1] == 0
+		var won: bool = c.won == 0
 		lines.append("")
-		lines.append("The campaign ends here, %s." % ("with the enemy asking for a ceasefire" if won else "with the war still undecided"))
-		ui.show_debrief(m, "Campaign won" if won else "Ceasefire", "\n".join(lines), true, won)
+		var how: String = "won: the enemy asks for a ceasefire" if won else ("over: out of time, a ceasefire" if c.won == 2 else "lost")
+		lines.append("The war is %s." % how)
+		ui.show_debrief(m, "Victory" if won else ("Ceasefire" if c.won == 2 else "Defeat"), "\n".join(lines), true, won)
 		return
 	c.save()
-	ui.show_debrief(m, "Mission complete" if m.result == 0 else "Mission failed", "\n".join(lines), false, m.result == 0)
+	ui.show_debrief(m, "Operation complete" if m.result == 0 else "Operation failed", "\n".join(lines), false, m.result == 0)
 
 func next_mission() -> void:
 	ui.close_debrief()
-	begin_mission()
+	show_front()
 
 func set_speed(s: float) -> void:
 	if not started or sim.winner >= 0 or (mission != null and mission.result >= 0) or ui.briefing_open:
@@ -325,6 +530,8 @@ func day_of_month(t: float) -> int:
 	return int(clock_text(t, true).split(" ")[0])
 
 func _process(delta: float) -> void:
+	if ui == null:
+		return
 	if _fake_mouse != null:
 		mouse = _fake_mouse
 	else:
@@ -350,7 +557,8 @@ func _process(delta: float) -> void:
 	# The home screen's picture covers the map: no need to draw the map under it.
 	_view.visible = not ui.home_open
 	handle_events()
-	if mission != null and started and mission.result < 0 and sim.winner < 0:
+	if mission != null and started and mission.result < 0:
+		_operation_events()
 		mission.update(sim)
 		if mission.result >= 0:
 			end_mission()
@@ -397,6 +605,10 @@ func update_hover() -> void:
 	hover_region = -1
 	strike_snap = null
 	strike_target = mouse
+	if front_open and not ui.menu_open and (_fake_mouse != null or get_viewport().gui_get_hovered_control() == null):
+		var fid: int = map.region_at(mouse)
+		hover_region = -1 if fid == LiteMap.NONE else fid
+		return
 	if not started or ui.menu_open or (_fake_mouse == null and get_viewport().gui_get_hovered_control() != null):
 		return
 	var best: float = 11
@@ -422,7 +634,7 @@ func _unhandled_input(e: InputEvent) -> void:
 		elif build_tool != null or strike_tool != null:
 			build_tool = null
 			strike_tool = null
-		elif started and sim.winner < 0:
+		elif (started and sim.winner < 0) or front_open:
 			ui.show_menu()
 		get_viewport().set_input_as_handled()
 		return
@@ -438,6 +650,11 @@ func _unhandled_input(e: InputEvent) -> void:
 	if key != null and key.pressed and not key.echo and key.keycode == KEY_T and ui.stats_view.visible:
 		ui.stats_view.visible = false
 		audio.click()
+		get_viewport().set_input_as_handled()
+		return
+	var click: InputEventMouseButton = e as InputEventMouseButton
+	if front_open and not ui.menu_open and click != null and click.pressed and click.button_index == MOUSE_BUTTON_LEFT and hover_region >= 0:
+		pick_front(campaign.group_at(hover_region))
 		get_viewport().set_input_as_handled()
 		return
 	if not started or sim.winner >= 0 or ui.menu_open or (mission != null and mission.result >= 0):
@@ -486,6 +703,10 @@ func try_build() -> void:
 		return
 	if k == LiteKind.FACTORY:
 		var r: int = map.regions[hover_region].parent if hover_region >= 0 and map.regions[hover_region].city else hover_region
+		# A click on a factory place counts for its region, wherever it lies.
+		var on_slot: int = _view.slot_region_at(mouse)
+		if on_slot >= 0:
+			r = on_slot
 		if r < 0 or map.regions[r].side != 0:
 			refuse("Pick one of your regions")
 			return
@@ -636,7 +857,10 @@ func handle_events() -> void:
 				elif r.side == 0 and (r.total >= 3 or r.hits > 0):
 					ui.post("Our strike: %s · %s, %d lost" % [composition(r), hits, r.down], LiteGlyphs.OURS)
 			LiteEv.GAME_OVER:
-				_end_timer = 2.0
+				# In a campaign operation a command falling ends the
+				# operation (see LiteMission.update), not the war.
+				if mission == null:
+					_end_timer = 2.0
 				build_tool = null
 				strike_tool = null
 				audio.play("explosion_b.wav", -5.0)
@@ -648,8 +872,8 @@ func show_end() -> void:
 	var stats: String = ("%s has fallen after %s of war.\n\n" % [map.capital_name[1 if won else 0], LiteHud.duration(sim.time + clock_offset)]) + ("Enemy weapons shot down: %d\n" % me.downed) + ("Our hits on enemy sites: %d\n" % me.hits) + ("Enemy sites destroyed: %d\n" % me.destroyed) + ("Our sites lost: %d" % me.lost)
 	if campaign != null:
 		# A capital falling ends the whole campaign, whichever mission it was.
-		stats = ("%s has fallen in mission %d of %d. The campaign is %s.\n\nProvinces taken: %d · lost: %d" %
-			[map.capital_name[1 if won else 0], mission.number, LiteCampaign.MISSIONS.size(), "won" if won else "lost",
+		stats = ("%s has fallen in operation %d. The campaign is %s.\n\nProvinces taken: %d · lost: %d" %
+			[map.capital_name[1 if won else 0], mission.number, "won" if won else "lost",
 			campaign.taken[0], campaign.taken[1]])
 		LiteCampaign.forget()
 	ui.show_end(won, stats)
@@ -747,10 +971,23 @@ func run_shots(dir: String, maps: int) -> void:
 	if maps > 0:
 		var first: int = seed
 		ui.close_menu()
-		for k: int in maps:
-			new_world(first + k * 101)
+		# `--lite-map-ids=3,7,12`: those baked maps (by index) instead.
+		var picks: Array[int] = []
+		for a: String in OS.get_cmdline_user_args():
+			if a.begins_with("--lite-map-ids="):
+				for t: String in a.substr(15).split(","):
+					picks.append(t.to_int())
+		if picks.is_empty():
+			for k: int in maps:
+				picks.append(first + k * 101)
+		for p: int in picks:
+			new_world(p)
 			await _wait(0.3)
 			await _shot(dir, "map_%d.png" % seed)
+		# `--lite-maps-only`: no game screenshots after the maps.
+		if "--lite-maps-only" in OS.get_cmdline_user_args():
+			get_tree().quit()
+			return
 		new_world(first)
 		ui.show_menu()
 	await _wait(1.0)
@@ -800,79 +1037,175 @@ func run_shots(dir: String, maps: int) -> void:
 	get_tree().quit()
 
 ## A campaign played through by our own planner, without sound, for testing:
-## `--lite-campaign=<dir>` saves a screenshot of each briefing, each mission
-## under way and each debrief there, and prints how each mission went. Our
-## planner is pointed at each mission's province, as a player would be.
+## `--lite-campaign=<dir>` plays up to `--lite-ops=N` operations (4), each
+## the first offered on the front, and saves a screenshot of the front, each
+## briefing, each operation under way and each debrief there, printing how
+## each went. Our planner is pointed at each operation's targets, as a player
+## would be.
 func run_campaign(dir: String) -> void:
 	AudioServer.set_bus_mute(0, true)
 	LiteCampaign.path = "user://lite_campaign_test.json"
 	DirAccess.make_dir_recursive_absolute(dir)
 	_autoplay = true
+	var most: int = 4
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-ops=") and a.substr(11).is_valid_int():
+			most = a.substr(11).to_int()
+		if a == "--lite-counter":
+			LiteCampaign.counter_chance = 1.0
+		if a.begins_with("--lite-difficulty=") and a.substr(18).is_valid_int():
+			LiteSettings.difficulty = clampi(a.substr(18).to_int(), 0, 2)
 	await _wait(0.5)
-	ui.show_campaign()
-	await _wait(0.4)
-	await _shot(dir, "c0_campaign.png")
-	start_campaign(true)
-	while campaign != null:
+	start_campaign(true, seed)
+	# `--lite-hold`: the enemy attacking one of ours from the start.
+	if "--lite-hold" in OS.get_cmdline_user_args():
+		campaign.counter = campaign.group_at(LiteCampaign._border(war_map, 0)[0])
+		show_front()
+	var n: int = 0
+	while campaign != null and n < most:
+		await _wait(0.6)
+		await _shot(dir, "c%d_a_front.png" % n)
+		var t0: int = Time.get_ticks_msec()
+		await launch_operation()
+		if mission == null:
+			print("[campaign] no operation could start")
+			break
 		var m: LiteMission = mission
-		print("[campaign] mission %d %s: %s, %s, %d days, notes: %s" % [m.number, m.title, m.goal_text(sim), m.optional_text(), roundi(m.days), " | ".join(m.notes)])
-		await _wait(0.8)
-		await _shot(dir, "c%d_a_briefing.png" % m.number)
+		print("[campaign] op %d %s (%s): %s, %d targets, %d days, map in %d ms, events %s" % [m.number, m.title,
+			LiteMission.character_name(m.character), m.goal_text(sim), m.targets.size(), roundi(m.days), Time.get_ticks_msec() - t0, m.events])
+		await _wait(0.6)
+		await _shot(dir, "c%d_b_briefing.png" % n)
 		launch_mission()
-		print("[campaign] start: %s" % line(sim))
 		# The planner that holds its own against Normal in the balance runs.
 		sim.ai[0].classic = true
 		sim.ai[0].waves = true
 		if m.kind == LiteMission.HOLD:
-			# What a player would do first: more air defence over the province.
-			var anchor: Vector2 = map.regions[m.region].label
-			for b: LiteBuilding in sim.sites_in(0, m.region, LiteKind.FACTORY):
-				anchor = b.pos
-			for k: int in [LiteKind.SAM, LiteKind.GUN, LiteKind.GUN]:
-				var p: Variant = sim.find_spot(0, anchor, 12, 40)
+			# What a player would do first: air defence over the province.
+			for id: int in map.focus:
+				var p: Variant = sim.find_spot(0, map.regions[id].label, 6, 30)
 				if p != null:
-					sim.build(0, k, p)
+					sim.build(0, LiteKind.SAM, p)
 		else:
-			sim.ai[0].focus = m.region if m.kind == LiteMission.STRIKE else map.capital_province(1)
+			sim.ai[0].focus_set = map.focus
 			sim.ai[0].focus_weight = 5.0
-		if m.kind == LiteMission.CAPITAL:
+		if m.kind != LiteMission.HOLD:
 			_salvos(m)
 		speed = 3
 		Engine.time_scale = 6
 		await _until(func() -> bool: return m.result >= 0 or sim.winner >= 0 or sim.time > m.length * 0.35)
 		Engine.time_scale = 1
 		await _wait(0.4)
-		await _shot(dir, "c%d_b_war.png" % m.number)
-		if m.number == 1:
-			ui.show_menu()
-			await _wait(0.5)
-			await _shot(dir, "c1_pause_menu.png")
-			ui.close_menu()
+		await _shot(dir, "c%d_c_war.png" % n)
 		Engine.time_scale = 6
-		await _until(func() -> bool: return m.result >= 0 or sim.winner >= 0)
+		await _until(func() -> bool:
+			# A test player stuck far past the operation's usual length gives up.
+			if m.result < 0 and sim.time > m.length * 3.0:
+				withdraw_operation()
+			return m.result >= 0)
 		Engine.time_scale = 1
-		print("[campaign] mission %d: result %d at t=%d (%s) · optional %s · %s" % [m.number, m.result, roundi(sim.time), m.outcome, m.optional_done, line(sim)])
+		print("[campaign] op %d: result %d at t=%d (%s) · targets %d/%d · optional %s · %s" % [m.number, m.result, roundi(sim.time),
+			m.outcome, m.destroyed(), m.targets.size(), m.optional_done, line(sim)])
 		if sim.winner >= 0:
-			await _wait(3.0)
-			await _shot(dir, "c9_end.png")
-			print("[campaign] a capital fell: winner %d" % sim.winner)
+			print("[campaign] a command fell: winner %d" % sim.winner)
 			break
 		await _until(func() -> bool: return ui.debrief_open)
 		await _wait(0.6)
-		await _shot(dir, "c%d_c_debrief.png" % m.number)
+		await _shot(dir, "c%d_d_debrief.png" % n)
 		if campaign.finished:
+			print("[campaign] the war is over: %s" % ("won" if campaign.won == 0 else "lost"))
 			break
 		next_mission()
+		n += 1
 	LiteCampaign.forget()
 	get_tree().quit()
 
-## The test player against a capital: every ballistic missile it can afford,
-## six at a time, the rest of the war left to the planner.
+## The test player against an operation's targets: ballistic missiles, four at a
+## time at the first target still standing, the rest of the war left to the planner.
 func _salvos(m: LiteMission) -> void:
-	while m.result < 0 and sim.winner < 0 and campaign != null:
+	while m.result < 0 and sim.winner < 0 and campaign != null and mission == m:
 		await _wait(0.2)
-		if sim.sides[0].money >= 6 * LiteRules.cost(LiteArm.BALLISTIC):
-			sim.strike(0, LiteArm.BALLISTIC, sim.sides[1].capital.pos, 6)
+		var aim: LiteBuilding = null
+		for t: LiteBuilding in m.targets:
+			if t.alive:
+				aim = t
+				break
+		if aim != null and sim.time > 30.0 and sim.sides[0].money >= 4 * LiteRules.cost(LiteArm.BALLISTIC) + 250:
+			sim.strike(0, LiteArm.BALLISTIC, aim.pos, 4)
+
+## The tips and an operation's screens for testing, `--lite-tips-shot=<dir>`:
+## each war tip, the front's tips, a briefing, and an operation under way
+## with its card, without sound and without saving anything.
+func tips_shots(dir: String) -> void:
+	AudioServer.set_bus_mute(0, true)
+	LiteSettings.dry = true
+	LiteCampaign.path = "user://lite_campaign_test.json"
+	DirAccess.make_dir_recursive_absolute(dir)
+	LiteSettings.tips_war = false
+	LiteSettings.tips_front = false
+	await _wait(0.5)
+	ui.close_menu()
+	new_game()
+	for k: int in 7:
+		await _wait(0.5)
+		if not ui.tutorial.running:
+			break
+		await _shot(dir, "t_war_%d.png" % k)
+		ui.tutorial.next()
+	ui.tutorial.finish()
+	start_campaign(true, seed)
+	await _wait(0.6)
+	await _shot(dir, "t_front_0.png")
+	ui.tutorial.next()
+	await _wait(0.4)
+	await _shot(dir, "t_front_1.png")
+	ui.tutorial.finish()
+	await _wait(0.3)
+	await _shot(dir, "t_front_2.png")
+	await launch_operation()
+	await _wait(0.6)
+	await _shot(dir, "t_briefing.png")
+	LiteSettings.tips_war = false
+	launch_mission()
+	await _wait(0.5)
+	await _shot(dir, "t_op_tip0.png")
+	ui.tutorial.next()
+	await _wait(0.4)
+	await _shot(dir, "t_op_tip1.png")
+	ui.tutorial.finish()
+	_autoplay = true
+	sim.ai[0] = LiteAi.new(0, seed + 2, 30.0)
+	speed = 3
+	Engine.time_scale = 6
+	var m: LiteMission = mission
+	await _until(func() -> bool: return m.result >= 0 or sim.time > m.length * 0.55)
+	Engine.time_scale = 1
+	await _wait(0.4)
+	await _shot(dir, "t_op_war.png")
+	LiteCampaign.forget()
+	get_tree().quit()
+
+## Operation maps for testing, `--lite-region-shot=<dir>`: on this seed's war
+## map, each of the first few enemy provinces on the front drawn as an
+## operation's map, a screenshot of each.
+func region_shots(dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dir)
+	ui.close_menu()
+	LiteRegionMap.timing = true
+	var war: LiteMap = map
+	var front: Array[int] = LiteCampaign._border(war, 1)
+	for k: int in mini(4, front.size()):
+		var t0: int = Time.get_ticks_msec()
+		var one: Array[int] = [front[k]]
+		var m: LiteMap = await LiteRegionMap.build(war, one, front[k], war.seed * 31 + front[k], self)
+		if m == null:
+			print("[region] %s: no map" % war.regions[front[k]].name)
+			continue
+		print("[region] %s: %d districts in view, built in %d ms" % [war.regions[front[k]].name, m.regions.size(), Time.get_ticks_msec() - t0])
+		show_map(m, 7 + k)
+		started = true
+		await _wait(0.5)
+		await _shot(dir, "region_%d.png" % k)
+	get_tree().quit()
 
 func run_bench() -> void:
 	AudioServer.set_bus_mute(0, true)

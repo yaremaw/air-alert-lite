@@ -20,6 +20,15 @@ const OBJECTIVE: Color = Color("#a98bff")
 # missiles (cruise or ballistic) are.
 const OUR_LAND: Color = Color("#3a3d46")
 const ENEMY_LAND: Color = Color("#24262c")
+# The world round them: neighbouring countries darker than either side, with
+# lighter lines between them, and the sea a little darker than the page.
+const NEUTRAL_LAND: Color = Color("#1a1c20")
+const NEUTRAL_LINE: Color = Color("#2a2d33")
+## Where a neighbour meets either of the two countries: a clear border.
+const NEUTRAL_EDGE: Color = Color("#454a54")
+const NEUTRAL_NAME: Color = Color("#4f555f")
+const SEA: Color = Color("#111317")
+const SEA_NAME: Color = Color("#34404f")
 const AIR_ALERT: Color = Color("#d4a017")
 const MISSILE_ALERT: Color = Color("#e0574a")
 const BALLISTIC_ALERT: Color = MISSILE_ALERT
@@ -77,6 +86,9 @@ static func name(k: int) -> String:
 		LiteKind.CAPITAL: return "Capital"
 		LiteKind.FACTORY: return "Factory"
 		LiteKind.GUN: return "AA gun"
+		LiteKind.DEPOT: return "Ammo depot"
+		LiteKind.RADAR: return "Radar"
+		LiteKind.LAUNCHER: return "Drone launch site"
 		_: return "SAM"
 
 static func name_arm(a: int) -> String:
@@ -96,6 +108,9 @@ static func of(k: int) -> int:
 		LiteKind.CAPITAL: return LiteGlyph.CAPITAL
 		LiteKind.FACTORY: return LiteGlyph.FACTORY
 		LiteKind.GUN: return LiteGlyph.GUN
+		LiteKind.DEPOT: return LiteGlyph.DEPOT
+		LiteKind.RADAR: return LiteGlyph.RADAR
+		LiteKind.LAUNCHER: return LiteGlyph.LAUNCHER
 		_: return LiteGlyph.SAM
 
 static func of_arm(a: int) -> int:
@@ -106,6 +121,19 @@ static func of_arm(a: int) -> int:
 
 const FACTORY_PTS: PackedVector2Array = [
 	Vector2(-5, 4), Vector2(5, 4), Vector2(5, -1), Vector2(1.7, -3.5), Vector2(1.7, -1), Vector2(-1.6, -3.5), Vector2(-1.6, -1), Vector2(-5, -3.5),
+]
+## An ammunition depot: an earth-covered bunker.
+const DEPOT_PTS: PackedVector2Array = [
+	Vector2(-5.2, 4), Vector2(5.2, 4), Vector2(5.2, 0.5), Vector2(3.2, -3), Vector2(-3.2, -3), Vector2(-5.2, 0.5),
+]
+## A radar: a dish on a mast.
+const RADAR_PTS: PackedVector2Array = [
+	Vector2(-5.2, -2.6), Vector2(-3.4, -4.6), Vector2(0, -5.6), Vector2(3.4, -4.6), Vector2(5.2, -2.6),
+	Vector2(0.9, -1.2), Vector2(0.9, 3.6), Vector2(3.0, 4.8), Vector2(-3.0, 4.8), Vector2(-0.9, 3.6), Vector2(-0.9, -1.2),
+]
+## A drone launch site: a rail angled up, a drone at its end.
+const LAUNCHER_PTS: PackedVector2Array = [
+	Vector2(-5.4, 4.6), Vector2(1.6, -0.4), Vector2(1.4, -3.4), Vector2(5.6, -5.0), Vector2(4.2, -0.8), Vector2(2.6, 0.8), Vector2(-3.4, 4.6),
 ]
 const SAM_PTS: PackedVector2Array = [
 	Vector2(0, -5.5), Vector2(1.6, -2.5), Vector2(1.6, 2.5), Vector2(3.2, 4.8), Vector2(-3.2, 4.8), Vector2(-1.6, 2.5), Vector2(-1.6, -2.5),
@@ -146,6 +174,9 @@ static func draw_ci(ci: CanvasItem, g: int, c: Vector2, s: float, col: Color, an
 		LiteGlyph.CAPITAL: poly(ci, STAR_PTS, c, s, angle, col, outline)
 		LiteGlyph.FACTORY: poly(ci, FACTORY_PTS, c, s, angle, col, outline)
 		LiteGlyph.SAM: poly(ci, SAM_PTS, c, s, angle, col, outline)
+		LiteGlyph.DEPOT: poly(ci, DEPOT_PTS, c, s, angle, col, outline)
+		LiteGlyph.RADAR: poly(ci, RADAR_PTS, c, s, angle, col, outline)
+		LiteGlyph.LAUNCHER: poly(ci, LAUNCHER_PTS, c, s, angle, col, outline)
 		LiteGlyph.DRONE: poly(ci, DRONE_PTS, c, s, angle, col, outline)
 		LiteGlyph.CRUISE: poly(ci, CRUISE_PTS, c, s, angle, col, outline)
 		LiteGlyph.GUN:
@@ -175,6 +206,9 @@ static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: 
 		LiteGlyph.CAPITAL: b.shape(STAR_PTS, _cut(STAR_PTS), c, s, angle, col, outline)
 		LiteGlyph.FACTORY: b.shape(FACTORY_PTS, _cut(FACTORY_PTS), c, s, angle, col, outline)
 		LiteGlyph.SAM: b.shape(SAM_PTS, _cut(SAM_PTS), c, s, angle, col, outline)
+		LiteGlyph.DEPOT: b.shape(DEPOT_PTS, _cut(DEPOT_PTS), c, s, angle, col, outline)
+		LiteGlyph.RADAR: b.shape(RADAR_PTS, _cut(RADAR_PTS), c, s, angle, col, outline)
+		LiteGlyph.LAUNCHER: b.shape(LAUNCHER_PTS, _cut(LAUNCHER_PTS), c, s, angle, col, outline)
 		LiteGlyph.DRONE: b.shape(DRONE_PTS, _cut(DRONE_PTS), c, s, angle, col, outline, rim)
 		LiteGlyph.CRUISE: b.shape(CRUISE_PTS, _cut(CRUISE_PTS), c, s, angle, col, outline, rim)
 		LiteGlyph.GUN:

@@ -26,9 +26,12 @@ var waves: bool = false
 var adaptive: bool = false
 
 var massing: bool = false
-## A province it is told to go for (a campaign mission's offensive), and how
-## much more the sites there are worth to it than elsewhere.
-var focus: int = -1
+## The provinces it is told to go for (a campaign offensive's, on an
+## operation's map its districts), and how much more the sites there are
+## worth to it than elsewhere.
+var focus_set: PackedInt32Array = PackedInt32Array()
+## How many more air defence sites it may build (-1: as many as it likes).
+var ad_limit: int = -1
 var focus_weight: float = 1.0
 var _focus_at: float = 0.0
 var _wave_cost: float = 0.0
@@ -100,8 +103,14 @@ func afford(s: LiteSim, me: LiteSide, kind: int, urgent: bool) -> bool:
 	return true
 
 func put(s: LiteSim, kind: int, near: Vector2, r_min: float, r_max: float) -> bool:
+	var ad: bool = kind == LiteKind.GUN or kind == LiteKind.SAM
+	if ad and ad_limit == 0:
+		return false
 	var p: Variant = s.find_spot(side, near, r_min, r_max)
-	return p != null and s.build(side, kind, p) != null
+	var ok: bool = p != null and s.build(side, kind, p) != null
+	if ok and ad and ad_limit > 0:
+		ad_limit -= 1
+	return ok
 
 func defend(s: LiteSim, me: LiteSide) -> void:
 
@@ -699,12 +708,12 @@ func _loss(s: LiteSim, arm: int) -> float:
 ## the province itself now and then: an offensive goes on whether or not
 ## there is a site to aim at. True if it sent a raid.
 func _press_focus(s: LiteSim, me: LiteSide) -> bool:
-	if focus < 0 or s.time < _focus_at:
+	if focus_set.is_empty() or s.time < _focus_at:
 		return false
 	for b: LiteBuilding in s.buildings:
-		if b.alive and b.side != side and b.seen[side] and s.map.province(b.region) == focus:
+		if b.alive and b.side != side and b.seen[side] and focus_set.has(s.map.province(b.region)):
 			return false
-	var spots: Array[Vector2] = s.map.regions[focus].spots
+	var spots: Array[Vector2] = s.map.regions[focus_set[_next(focus_set.size())]].spots
 	if spots.is_empty():
 		return false
 	_focus_at = s.time + _r(16, 26) * tempo
@@ -721,7 +730,7 @@ func _press_focus(s: LiteSim, me: LiteSide) -> bool:
 	return true
 
 func _focus(s: LiteSim, b: LiteBuilding) -> float:
-	return focus_weight if focus >= 0 and s.map.province(b.region) == focus else 1.0
+	return focus_weight if focus_set.has(s.map.province(b.region)) else 1.0
 
 ## What destroying a site is worth to us, in money.
 func _value(s: LiteSim, b: LiteBuilding) -> float:
@@ -740,6 +749,12 @@ func _site_value(s: LiteSim, b: LiteBuilding) -> float:
 			return 240.0 + 110.0 * near + (25.0 * b.kills if adaptive else 0.0)
 		LiteKind.GUN:
 			return 70.0 + 55.0 * near + (10.0 * b.kills if adaptive else 0.0)
+		LiteKind.DEPOT:
+			return 420.0
+		LiteKind.RADAR:
+			return 300.0 + 80.0 * near
+		LiteKind.LAUNCHER:
+			return 360.0
 		LiteKind.CAPITAL:
 			var factories: int = 0
 			for o: LiteBuilding in s.buildings:
