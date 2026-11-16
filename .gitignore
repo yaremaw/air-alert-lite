@@ -1,3 +1,7 @@
 .godot/
 build/
 *.tmp
+
+# Promo material and local tool settings: not part of the game.
+itch/
+.claude/

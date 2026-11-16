@@ -13,6 +13,9 @@ extends RefCounted
 ## How far, in the operation map's units, its borders are pushed either way
 ## by their zigzag: detail the war map is too coarse to have at this scale.
 const ZIGZAG: float = 4.0
+## The shape of the screen's map frame (width over height) in the command look,
+## which the operation's map is cut to.
+const ASPECT: float = 1.85
 ## Print how long each stage of building takes.
 static var timing: bool = false
 
@@ -39,12 +42,36 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 	if hi == Vector2.ZERO:
 		return null
 	var size: Vector2 = (hi - lo).max(Vector2(24, 24))
-	var margin: float = maxf(size.x, size.y) * 0.3 + 24.0
-	var win:= Rect2(lo - Vector2(margin, margin), size + Vector2(margin, margin) * 2.0)
-	# Its box filling the frame, wider or taller as it is.
+	# What is shown: the province with room round it, as wide as the screen
+	# the operation is fought on (ASPECT), so the map fills it. Districts of
+	# the rings round the province whose middle falls outside it are left out.
+	var view:= Vector2(size.x * 1.1 + 20.0, size.y * 1.1 + 20.0)
+	if view.x / view.y < ASPECT:
+		view.x = view.y * ASPECT
+	else:
+		view.y = view.x / ASPECT
+	# Leaning towards the other side's land next to it (ours, in an attack),
+	# where its own front and bases are.
+	var mid_g: Vector2 = lo + size * 0.5
+	var near_sum:= Vector2.ZERO
+	var near_n: int = 0
+	var own_side: int = war.regions[province].side
+	for p: int in provinces:
+		for o: int in war.provinces_next_to(p):
+			if in_set[o] == 0 and war.regions[o].side != own_side:
+				near_sum += war.regions[o].label
+				near_n += 1
+	var lean:= Vector2.ZERO
+	if near_n > 0:
+		lean = (near_sum / near_n - mid_g) * 0.35
+		lean = lean.clamp(-view * 0.22, view * 0.22)
+	var win:= Rect2(mid_g + lean - view * 0.6, view * 1.2)
+	# That box filling the map's frame.
 	var k: float = minf((W - 40.0) / win.size.x, (H - 40.0) / win.size.y)
 	var mid:= Vector2(W, H) * 0.5
 	var at: Vector2 = win.get_center()
+	var shown:= Rect2(mid - view * k * 0.5, view * k)
+	var player_side: int = 0
 	var zig:= FastNoiseLite.new()
 	zig.seed = seed
 	zig.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -196,15 +223,38 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 			if keep[o] == 2 and adj[d * KEYS + o] == 1:
 				keep[d] = 1
 				break
-	# And a second ring of our own districts, so we have room behind our
-	# front for factories and air defence.
+	# And a second ring of our districts, so we have room behind the front
+	# for factories and air defence (the enemy's own depth stays out of view:
+	# the map is about the province fought over).
 	for d: int in KEYS:
-		if keep[d] != 0 or used[d] == 0 or dside[d] != 0:
+		if keep[d] != 0 or used[d] == 0:
 			continue
 		for o: int in KEYS:
-			if keep[o] == 1 and dside[o] == 0 and adj[d * KEYS + o] == 1:
+			if keep[o] == 1 and dside[o] == dside[d] and dside[d] == player_side and adj[d * KEYS + o] == 1:
 				keep[d] = 3
 				break
+	# Only what is in view: ring districts whose middle is outside the box
+	# go (unless that leaves a side with no land here).
+	var sum_at:= PackedVector2Array()
+	sum_at.resize(KEYS)
+	var n_at:= PackedInt32Array()
+	n_at.resize(KEYS)
+	for y: int in H:
+		for x: int in W:
+			var d: int = key[y * W + x]
+			if d >= 0:
+				sum_at[d] += Vector2(x, y)
+				n_at[d] += 1
+	var trimmed: PackedByteArray = keep.duplicate()
+	var sides_left: Array[bool] = [false, false]
+	for d: int in KEYS:
+		if trimmed[d] == 1 or trimmed[d] == 3:
+			if n_at[d] > 0 and not shown.has_point(sum_at[d] / n_at[d]):
+				trimmed[d] = 0
+		if trimmed[d] != 0 and n_at[d] > 0:
+			sides_left[dside[d]] = true
+	if sides_left[0] and sides_left[1]:
+		keep = trimmed
 	var beyond:= PackedByteArray()
 	beyond.resize(W * H)
 	for i: int in W * H:
@@ -217,6 +267,7 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 	# The districts become this map's regions, each on the side of the
 	# province holding most of it.
 	var m:= LiteMap.new(seed)
+	m.climate = LiteBiome.climate(war)
 	var region_of:= PackedInt32Array()
 	region_of.resize(KEYS)
 	region_of.fill(-1)
@@ -301,8 +352,14 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 	# well behind its front.
 	var other: int = -1
 	var far: float = -1.0
+	# A big enough district if there is one in view, else any with room.
+	var small_ok: bool = true
 	for r: LiteRegion in m.regions:
-		if r.side == side_here or r.spots.size() < 4 or r.area < 900:
+		if r.side != side_here and r.spots.size() >= 4 and r.area >= 900:
+			small_ok = false
+			break
+	for r: LiteRegion in m.regions:
+		if r.side == side_here or r.spots.size() < (1 if small_ok else 4) or (r.area < 900 and not small_ok):
 			continue
 		var d: float = INF
 		for f: LiteRegion in m.regions:
@@ -325,6 +382,11 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 		m.label_only.erase(largest.get(owner[cmd], -1))
 	m.capital_name[side_here] = "HQ %s" % m.regions[city].name
 	m.capital_name[1 - side_here] = "HQ %s" % (m.regions[other].name if m.regions[other].name != "" else "Front")
+	# Each district cut into smaller pieces for the air alerts, as on the war map.
+	t0 = Time.get_ticks_msec()
+	m.sub = _op_districts(m, seed)
+	if timing:
+		print("[region]   alert districts %d ms" % (Time.get_ticks_msec() - t0))
 	# The sea and foreign land round it, as on the war's map.
 	if war.world != null:
 		t0 = Time.get_ticks_msec()
@@ -332,6 +394,75 @@ static func build(war: LiteMap, provinces: Array[int], province: int, seed: int,
 		if timing:
 			print("[region]   world %d ms" % (Time.get_ticks_msec() - t0))
 	return m
+
+## About how much land, in this map's units, each piece an air alert can
+## cover has (see LiteMap.sub): a district of the operation's map is cut into
+## 1 to 5 of them.
+const OP_PIECE: float = 2400.0
+
+## The operation map's districts cut into pieces for the air alerts: the land
+## nearest each of a few seeds spread over the district, through a gentle
+## warp so their borders wander. Worked out on a grid of 2 units.
+static func _op_districts(m: LiteMap, seed: int) -> PackedByteArray:
+	const W: int = LiteMap.W
+	const H: int = LiteMap.H
+	var n: int = m.regions.size()
+	var rng:= RandomNumberGenerator.new()
+	rng.seed = seed * 131 + 7
+	var warp:= FastNoiseLite.new()
+	warp.seed = seed + 29
+	warp.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	warp.frequency = 0.035
+	var first:= PackedInt32Array()
+	first.resize(n + 1)
+	var seeds:= PackedVector2Array()
+	for r: LiteRegion in m.regions:
+		first[r.id] = seeds.size()
+		var k: int = clampi(roundi(r.area / OP_PIECE), 1, 5)
+		k = mini(k, maxi(1, 250 - seeds.size() - (n - r.id - 1)))
+		var pool: Array[Vector2] = r.spots.duplicate()
+		if pool.is_empty():
+			pool = [r.label]
+		var chosen: Array[Vector2] = [pool[rng.randi_range(0, pool.size() - 1)]]
+		while chosen.size() < k:
+			var best: Vector2 = pool[0]
+			var bd: float = -1.0
+			for q: Vector2 in pool:
+				var dq: float = INF
+				for c: Vector2 in chosen:
+					dq = minf(dq, q.distance_squared_to(c))
+				if dq > bd:
+					bd = dq
+					best = q
+			chosen.append(best)
+		seeds.append_array(PackedVector2Array(chosen))
+	first[n] = seeds.size()
+	var out:= PackedByteArray()
+	out.resize(W * H)
+	out.fill(LiteMap.NONE)
+	for y: int in range(0, H, 2):
+		for x: int in range(0, W, 2):
+			var q:= Vector2(x + 1.0 + 9.0 * warp.get_noise_2d(x, y), y + 1.0 + 9.0 * warp.get_noise_2d(x + 517.0, y - 311.0))
+			for dy: int in 2:
+				for dx: int in 2:
+					var i: int = (y + dy) * W + x + dx
+					if y + dy >= H or x + dx >= W:
+						continue
+					var c: int = m.cell[i]
+					if c == LiteMap.NONE:
+						continue
+					var a: int = first[c]
+					var b: int = first[c + 1]
+					var pick: int = a
+					if b - a > 1:
+						var bd: float = INF
+						for t: int in range(a, b):
+							var d: float = q.distance_squared_to(seeds[t])
+							if d < bd:
+								bd = d
+								pick = t
+					out[i] = pick
+	return out
 
 ## A command post: in its district, clear of the name and town in the middle
 ## of it (about 30 units off) but not out at its edge.

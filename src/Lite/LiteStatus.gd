@@ -86,3 +86,9 @@ static func _one_decimal(x: float) -> String:
 	if s.ends_with(".0"):
 		s = s.substr(0, s.length() - 2)
 	return s
+
+## Hidden (itself or a parent), it does no work frame by frame: with dozens
+## of these in the menus and the HUD, their _process added up.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED or what == NOTIFICATION_READY:
+		set_process(is_visible_in_tree())

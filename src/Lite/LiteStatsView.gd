@@ -14,8 +14,10 @@ const HEAT_HIGH: Color = Color("#ff4a3d")
 
 var main: LiteMain = null
 var tab: int = 0
-var _tabs: Array[LiteChip] = []
-var _close: LiteChip = null
+var _tabs: Array[Control] = []
+var _close: Control = null
+## Our land's box, in map units: the flight map shows our country only.
+var _ours: Rect2 = Rect2()
 var _map_tex: ImageTexture = null
 var _heat_tex: ImageTexture = null
 ## Where the routes went, in map units: the picture takes it in as well as
@@ -32,20 +34,37 @@ func _ready() -> void:
 	var names: Array[String] = ["Overview", "Attack reports"]
 	for i: int in 2:
 		var k: int = i
-		var c:= LiteChip.new()
-		c.text = names[i]
-		c.clicked = func() -> void:
+		var c: Control = _button(names[i])
+		c.set("clicked", func() -> void:
 			show_tab(k)
-			main.audio.click()
+			main.audio.click())
 		add_child(c)
 		_tabs.append(c)
-	_close = LiteChip.new()
-	_close.text = "Close · Esc"
-	_close.clicked = func() -> void:
+	_close = _button("Close · Esc")
+	_close.set("clicked", func() -> void:
 		main.audio.click()
-		visible = false
+		visible = false)
 	add_child(_close)
 	resized.connect(_layout)
+
+## A button in the look of the rest of the game.
+func _button(text: String) -> Control:
+	if LiteTheme.command:
+		var b:= LiteCmdButton.new()
+		b.text = text.to_upper()
+		b.font_size = 10
+		b.bar_left = false
+		return b
+	var c:= LiteChip.new()
+	c.text = text
+	return c
+
+## A panel or card: the command look's notched panels, or the old boxes.
+func _box(r: Rect2, card: bool) -> void:
+	if LiteTheme.command:
+		LiteCmdStyle.panel(self, r, LiteTheme.PANEL if card else LiteTheme.BG2, LiteTheme.BORDER)
+	else:
+		draw_style_box(_card if card else _panel, r)
 
 func open(p_tab: int = 0) -> void:
 	_build_map()
@@ -57,9 +76,10 @@ func open(p_tab: int = 0) -> void:
 func show_tab(k: int) -> void:
 	tab = k
 	for i: int in _tabs.size():
-		_tabs[i].selected = i == k
+		_tabs[i].set("selected", i == k)
 	var n: int = main.sim.stats.reports.size() if main != null and main.sim != null else 0
-	_tabs[1].text = "Attack reports · %d" % n
+	var t1: String = "Attack reports · %d" % n
+	_tabs[1].set("text", t1.to_upper() if LiteTheme.command else t1)
 	queue_redraw()
 
 func _panel_rect() -> Rect2:
@@ -72,7 +92,7 @@ func _layout() -> void:
 	_close.position = Vector2(x, y)
 	_close.size = Vector2(118, 30)
 	for i: int in range(_tabs.size() - 1, -1, -1):
-		var w: float = 150.0 if i == 1 else 110.0
+		var w: float = 170.0 if i == 1 else 110.0
 		x -= w + 8
 		_tabs[i].position = Vector2(x, y)
 		_tabs[i].size = Vector2(w, 30)
@@ -92,11 +112,14 @@ func _build_map() -> void:
 	for y: int in h:
 		for x: int in w:
 			ids[y * w + x] = map.cell[(y * K + K / 2) * LiteMap.W + x * K + K / 2]
+	_ours = Rect2()
 	for y: int in h:
 		for x: int in w:
 			var id: int = ids[y * w + x]
-			if id == LiteMap.NONE:
+			if id == LiteMap.NONE or map.regions[id].side != 0:
 				continue
+			var cb:= Rect2(x * K, y * K, K, K)
+			_ours = cb if _ours.size == Vector2.ZERO else _ours.merge(cb)
 			var side: int = map.regions[id].side
 			var col: Color = LiteGlyphs.OUR_LAND if side == 0 else LiteGlyphs.ENEMY_LAND.lightened(0.04)
 			var edge: bool = false
@@ -111,7 +134,7 @@ func _build_map() -> void:
 					edge = true
 					front = front or map.regions[n].side != side
 			if front:
-				col = Color(0.08, 0.08, 0.09)
+				col = LiteTheme.RED.darkened(0.3) if LiteTheme.command else Color(0.08, 0.08, 0.09)
 			elif edge:
 				col = col.darkened(0.3)
 			img.set_pixel(x, y, col)
@@ -149,6 +172,10 @@ func _build_heat() -> void:
 			var t: float = sqrt(v[y * w + x] / top) if top > 0 else 0.0
 			if t < 0.04:
 				continue
+			# Over our land only.
+			var mc: Vector2 = Vector2((x + 0.5) * LiteStats.CELL, (y + 0.5) * LiteStats.CELL)
+			if main.map.side_at(mc) != 0:
+				continue
 			var cell_box:= Rect2(x * LiteStats.CELL, y * LiteStats.CELL, LiteStats.CELL, LiteStats.CELL)
 			_heat_box = cell_box if _heat_box.size == Vector2.ZERO else _heat_box.merge(cell_box)
 			img.set_pixel(x, y, Color(heat_color(t), clampf(t * 1.8, 0, 0.92)))
@@ -162,14 +189,22 @@ static func heat_color(t: float) -> Color:
 func _draw() -> void:
 	if main == null or main.sim == null:
 		return
-	draw_rect(Rect2(Vector2.ZERO, size), Color(LiteGlyphs.PAGE, 0.86))
+	var cmd: bool = LiteTheme.command
+	draw_rect(Rect2(Vector2.ZERO, size), Color(LiteTheme.BG, 0.9) if cmd else Color(LiteGlyphs.PAGE, 0.86))
 	var p: Rect2 = _panel_rect()
-	draw_style_box(_panel, p)
+	_box(p, false)
 	var st: LiteStats = main.sim.stats
 	var x: float = p.position.x + 28
-	draw_string(LiteGlyphs.bold, Vector2(x, p.position.y + 46), "War statistics", HORIZONTAL_ALIGNMENT_LEFT, -1, 24, LiteGlyphs.TEXT)
 	var t: float = main.sim.time
-	draw_string(LiteGlyphs.font, Vector2(x, p.position.y + 68), "From %s to %s · %s of war" % [main.clock_text(0, true), main.clock_text(t, true), LiteHud.duration(t)], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
+	var sub: String = "From %s to %s · %s of war" % [main.clock_text(0, true), main.clock_text(t, true), LiteHud.duration(t)]
+	if cmd:
+		draw_string(LiteGlyphs.black, Vector2(x, p.position.y + 46), "WAR STATISTICS", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, LiteTheme.TEXT)
+		draw_string(LiteGlyphs.bold, Vector2(x, p.position.y + 66), sub.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteTheme.MUTED)
+		LiteCmdStyle.hatch(self, Rect2(x, p.position.y + 74, 260, 4), Color(LiteTheme.MUTED, 0.5))
+		draw_rect(Rect2(x + 264, p.position.y + 74, 8, 4), LiteTheme.RED)
+	else:
+		draw_string(LiteGlyphs.bold, Vector2(x, p.position.y + 46), "War statistics", HORIZONTAL_ALIGNMENT_LEFT, -1, 24, LiteGlyphs.TEXT)
+		draw_string(LiteGlyphs.font, Vector2(x, p.position.y + 68), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
 	var body:= Rect2(x, p.position.y + 88, p.size.x - 56, p.size.y - 88 - 24)
 	if tab == 0:
 		_overview(body, st)
@@ -177,9 +212,13 @@ func _draw() -> void:
 		_reports(body, st)
 
 func _card_at(r: Rect2, title: String, sub: String) -> Rect2:
-	draw_style_box(_card, r)
-	draw_string(LiteGlyphs.bold, r.position + Vector2(18, 28), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, LiteGlyphs.TEXT)
-	draw_string(LiteGlyphs.font, r.position + Vector2(18, 46), sub, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 36, 11, LiteGlyphs.MUTED)
+	_box(r, true)
+	if LiteTheme.command:
+		draw_string(LiteGlyphs.black, r.position + Vector2(18, 28), title.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LiteTheme.BLUE)
+		draw_string(LiteGlyphs.font, r.position + Vector2(18, 46), sub, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 36, 11, LiteTheme.MUTED)
+	else:
+		draw_string(LiteGlyphs.bold, r.position + Vector2(18, 28), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, LiteGlyphs.TEXT)
+		draw_string(LiteGlyphs.font, r.position + Vector2(18, 46), sub, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 36, 11, LiteGlyphs.MUTED)
 	return Rect2(r.position + Vector2(18, 60), r.size - Vector2(36, 74))
 
 func _overview(body: Rect2, st: LiteStats) -> void:
@@ -211,9 +250,14 @@ func _tiles(r: Rect2, st: LiteStats) -> void:
 	var w: float = (r.size.x - gap * 3) / 4
 	for i: int in 4:
 		var t:= Rect2(r.position + Vector2(i * (w + gap), 0), Vector2(w, r.size.y))
-		draw_style_box(_card, t)
-		draw_string(LiteGlyphs.font, t.position + Vector2(18, 26), tiles[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
-		draw_string(LiteGlyphs.bold, t.position + Vector2(18, 60), tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 28, tiles[i][3])
+		_box(t, true)
+		if LiteTheme.command:
+			draw_rect(Rect2(t.position + Vector2(1, 1), Vector2(2, t.size.y - 2)), tiles[i][3])
+			draw_string(LiteGlyphs.bold, t.position + Vector2(18, 26), String(tiles[i][0]).to_upper(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteTheme.MUTED)
+			draw_string(LiteGlyphs.black, t.position + Vector2(18, 60), tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 28, tiles[i][3])
+		else:
+			draw_string(LiteGlyphs.font, t.position + Vector2(18, 26), tiles[i][0], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.MUTED)
+			draw_string(LiteGlyphs.bold, t.position + Vector2(18, 60), tiles[i][1], HORIZONTAL_ALIGNMENT_LEFT, -1, 28, tiles[i][3])
 		draw_string(LiteGlyphs.font, t.position + Vector2(18, 80), tiles[i][2], HORIZONTAL_ALIGNMENT_LEFT, w - 36, 11, LiteGlyphs.MUTED)
 
 static func _nice(v: int) -> int:
@@ -271,10 +315,8 @@ func _density(card: Rect2, st: LiteStats) -> void:
 	var c: Rect2 = _card_at(card, "Where they flew", "The brighter, the more enemy drones and missiles passed")
 	var list_w: float = 150.0
 	# The land and wherever the routes went, with a little sea round them.
-	var land: Rect2 = main.map.land_rect
-	if _heat_box.size != Vector2.ZERO:
-		land = land.merge(_heat_box)
-	land = land.grow(16).intersection(Rect2(0, 0, LiteMap.W, LiteMap.H))
+	var land: Rect2 = _ours if _ours.size != Vector2.ZERO else main.map.land_rect
+	land = land.grow(10).intersection(Rect2(0, 0, LiteMap.W, LiteMap.H))
 	var area:= Rect2(c.position, c.size - Vector2(list_w + 12, 22))
 	var k: float = minf(area.size.x / land.size.x, area.size.y / land.size.y)
 	var dst:= Rect2(area.get_center() - land.size * k / 2, land.size * k)
@@ -304,7 +346,7 @@ func _density(card: Rect2, st: LiteStats) -> void:
 		var i: int = order[n]
 		var y: float = c.position.y + 38 + n * 44
 		draw_string(LiteGlyphs.bold, Vector2(x, y), main.map.regions[i].name, HORIZONTAL_ALIGNMENT_LEFT, list_w, 12, LiteGlyphs.TEXT)
-		draw_string(LiteGlyphs.font, Vector2(x, y + 16), "%d drones and missiles" % st.crossed[i], HORIZONTAL_ALIGNMENT_LEFT, list_w, 10, LiteGlyphs.MUTED)
+		draw_string(LiteGlyphs.font, Vector2(x, y + 16), ("1 drone or missile" if st.crossed[i] == 1 else "%d drones and missiles" % st.crossed[i]), HORIZONTAL_ALIGNMENT_LEFT, list_w, 10, LiteGlyphs.MUTED)
 		draw_rect(Rect2(x, y + 22, list_w, 3), LiteGlyphs.LINE)
 		draw_rect(Rect2(x, y + 22, list_w * st.crossed[i] / top, 3), HEAT_MID)
 

@@ -20,7 +20,7 @@ static func of_kinds(kinds: Array[int]) -> LiteIconList:
 		count[k] = int(count.get(k, 0)) + 1
 	var out: Array = []
 	for k: int in order:
-		out.append([k, ("%d %ss" % [count[k], LiteGlyphs.name(k).to_lower()]) if count[k] > 1 else LiteGlyphs.name(k)])
+		out.append([k, ("%d %s" % [count[k], LiteGlyphs.names(k)]) if count[k] > 1 else LiteGlyphs.name(k)])
 	return LiteIconList.new(out)
 
 func _draw() -> void:

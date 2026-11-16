@@ -111,9 +111,16 @@ func _place() -> void:
 		p = Vector2(r.end.x + 24, r.get_center().y - sz.y * 0.5)
 		if p.x + sz.x > view.x - 300:
 			p = Vector2(r.get_center().x - sz.x * 0.5, r.end.y + 24)
+	# Something up in the top bar: the tip goes under it, not beside it
+	# (beside, it would be pushed up under the bar).
+	if r.size != Vector2.ZERO and r.get_center().y < view.y * 0.15:
+		p = Vector2(r.get_center().x - sz.x * 0.5, r.end.y + 24)
+	# Never up under the top bar.
 	p.x = clampf(p.x, 12, view.x - sz.x - 12)
-	p.y = clampf(p.y, 12, view.y - sz.y - 12)
+	p.y = clampf(p.y, 60, view.y - sz.y - 12)
 	_panel.position = p
+	# And over everything (the front's strip is added after the tips).
+	move_to_front()
 
 func _target() -> Rect2:
 	if _at < 0 or _at >= _steps.size():
@@ -175,3 +182,9 @@ func _draw_route() -> void:
 	if n > 2:
 		var dir: Vector2 = (pts[n] - pts[n - 1]).normalized()
 		LiteGlyphs.draw_ci(self, LiteGlyph.DRONE, main.to_screen(pts[maxi(0, n - 3)]), 1.3, LiteGlyphs.OURS, dir.angle())
+
+## Hidden (itself or a parent), it does no work frame by frame: with dozens
+## of these in the menus and the HUD, their _process added up.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED or what == NOTIFICATION_READY:
+		set_process(is_visible_in_tree())

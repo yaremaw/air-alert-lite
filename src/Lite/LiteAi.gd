@@ -71,11 +71,19 @@ func tick(s: LiteSim, dt: float) -> void:
 	var me: LiteSide = s.sides[side]
 	var share: float = war_share * (0.5 if _exposed and not classic and smart else 1.0)
 	me.war_fund = minf(me.war_fund + me.income * share * dt, me.money)
+	if not LiteSim.classic_rules:
+		# Weapons are free now (they come from the stockpiles): no money is
+		# kept for strikes.
+		me.war_fund = 0.0
 	_think -= dt
 	if _think > 0: return
 	_think = _r(0.7, 1.3)
 	s.sams_on_drones[side] = me.money > 60
 	if classic or not smart:
+		if not LiteSim.classic_rules:
+			# Whatever its planner, it keeps its radar network.
+			_network(s, me)
+			_lines(s, me)
 		defend(s, me)
 		grow(s, me)
 		if turtle and free_money(me) > 260:
@@ -85,10 +93,13 @@ func tick(s: LiteSim, dt: float) -> void:
 					mine.append(b)
 			if mine.size() > 0:
 				var at: LiteBuilding = mine[_next(mine.size())]
-				put(s, LiteKind.SAM if _rng.randf() < 0.35 else LiteKind.GUN, at.pos, 14, 60)
+				put(s, LiteKind.SAM if _rng.randf() < 0.35 else LiteKind.GUN, at.pos, 19, 60)
 		attack(s, me)
 		return
 	grow(s, me)
+	if not LiteSim.classic_rules:
+		_network(s, me)
+		_lines(s, me)
 	_defend_smart(s, me)
 	_attack_smart(s, me)
 
@@ -103,7 +114,12 @@ func afford(s: LiteSim, me: LiteSide, kind: int, urgent: bool) -> bool:
 	return true
 
 func put(s: LiteSim, kind: int, near: Vector2, r_min: float, r_max: float) -> bool:
-	var ad: bool = kind == LiteKind.GUN or kind == LiteKind.SAM
+	# Phase 4c: one kind of AA gun a side (see LiteSim.gun_kind).
+	if not LiteSim.classic_rules and (kind == LiteKind.GUN or kind == LiteKind.MOBILE):
+		kind = s.gun_kind[side]
+	if not s.may_build(side, kind):
+		return false
+	var ad: bool = kind == LiteKind.GUN or kind == LiteKind.SAM or kind == LiteKind.MOBILE
 	if ad and ad_limit == 0:
 		return false
 	var p: Variant = s.find_spot(side, near, r_min, r_max)
@@ -130,10 +146,10 @@ func defend(s: LiteSim, me: LiteSide) -> void:
 	var want_sam: int = mini(4, 1 + int(s.time / 240))
 	var want_gun: int = mini(4, 1 + int(s.time / 300))
 	if cap_sam < want_sam:
-		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 16, 45)
+		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 24, 50)
 		return
 	if cap_gun < want_gun:
-		if afford(s, me, LiteKind.GUN, true): put(s, LiteKind.GUN, me.capital.pos, 18, 50)
+		if afford(s, me, LiteKind.GUN, true): put(s, LiteKind.GUN, me.capital.pos, 24, 55)
 		return
 
 	for i: int in me.hit_log.size():
@@ -145,7 +161,7 @@ func defend(s: LiteSim, me: LiteSide) -> void:
 				break
 		var cov: float = s.coverage(side, h.p)
 		if not valuable or cov >= 3: continue
-		var kind: int = LiteKind.SAM if cov < 1 and free_money(me) >= s.cost(side, LiteKind.SAM) + 20 and _rng.randf() < 0.5 else LiteKind.GUN
+		var kind: int = LiteKind.SAM if cov < 1 and free_money(me) >= s.cost(side, LiteKind.SAM) + 20 and _rng.randf() < 0.5 else (LiteKind.MOBILE if not LiteSim.classic_rules and _rng.randf() < 0.5 else LiteKind.GUN)
 		if not afford(s, me, kind, false): return
 		if put(s, kind, h.p, 8, 30): me.hit_log.remove_at(i)
 		return
@@ -156,19 +172,39 @@ func defend(s: LiteSim, me: LiteSide) -> void:
 		if not b.alive or b.side != side or b.kind != LiteKind.FACTORY: continue
 		var c: float = s.coverage(side, b.pos)
 		if c < 1 and afford(s, me, LiteKind.GUN, false):
-			put(s, LiteKind.GUN, b.pos, 12, 30)
+			put(s, LiteKind.GUN, b.pos, 19, 36)
 			return
 		if c < low:
 			low = c
 			weak = b
 	if weak == null or free_money(me) < 250 or s.time < 50: return
-	put(s, LiteKind.SAM if low < 2 else LiteKind.GUN, weak.pos, 12, 30)
+	put(s, LiteKind.SAM if low < 2 else LiteKind.GUN, weak.pos, 19, 36)
 
 func grow(s: LiteSim, me: LiteSide) -> void:
 	var factories: int = 0
 	for b: LiteBuilding in s.buildings:
 		if b.alive and b.side == side and b.kind == LiteKind.FACTORY: factories += 1
 	var cap: int = 2 + int(s.time / (32.0 if adaptive and not classic else 45.0))
+	if not LiteSim.classic_rules:
+		cap = 2 + int(s.time / (55.0 if adaptive else 70.0))
+	if not LiteSim.classic_rules:
+		# Money first: a refinery for every two factories, and one more.
+		var refineries: int = 0
+		for b: LiteBuilding in s.buildings:
+			if b.alive and b.side == side and b.kind == LiteKind.REFINERY:
+				refineries += 1
+		if refineries < 1 + factories / 2 and s.time - _last_factory >= 9 and free_money(me) >= LiteRules.cost_kind(LiteKind.REFINERY) + 20:
+			var deep: Vector2 = me.capital.pos
+			var far: float = -1.0
+			for b: LiteBuilding in s.buildings:
+				if b.alive and b.side == side and b.kind == LiteKind.FACTORY:
+					var d: float = s.front_distance(side, b.pos)
+					if d > far:
+						far = d
+						deep = b.pos
+			if put(s, LiteKind.REFINERY, deep, 20, 70):
+				_last_factory = s.time
+			return
 	if factories >= cap or free_money(me) < s.cost(side, LiteKind.FACTORY) + 20 or s.time - _last_factory < 9: return
 
 	var enemy_cap: Vector2 = s.sides[1 - side].capital.pos
@@ -226,9 +262,9 @@ func attack(s: LiteSim, me: LiteSide) -> void:
 			if not smart: loss = 0.5
 			var bal: int = 0
 			var cru: int = 0
-			if (t.kind == LiteKind.CAPITAL or t.kind == LiteKind.SAM) and s.time > 150 and budget >= 400 and _rng.randf() < 0.5:
+			if (t.kind == LiteKind.CAPITAL or t.kind == LiteKind.SAM) and s.time > 150 and budget >= 400 and _rng.randf() < 0.5 and s.has_arm(side, LiteArm.BALLISTIC):
 				bal = mini(3, int(budget * 0.3 / LiteRules.cost(LiteArm.BALLISTIC)))
-			if cov >= 2 and s.time > 60 and budget >= 200:
+			if cov >= 2 and s.time > 60 and budget >= 200 and s.has_arm(side, LiteArm.CRUISE):
 				cru = mini(8, ceili(hp * 0.5 / LiteRules.damage(LiteArm.CRUISE) / (1 - loss * 0.7)))
 			var left: float = hp - bal * LiteRules.damage(LiteArm.BALLISTIC) * 0.5 - cru * LiteRules.damage(LiteArm.CRUISE) * (1 - loss * 0.7)
 			var dr: int = maxi(1 if left > 0 else 0, ceili(left / (1 - loss)) + (1 if left > 0 else 0))
@@ -380,7 +416,9 @@ func scout(s: LiteSim, n: int) -> void:
 		var r: LiteRegion = regions[_next(regions.size())]
 		regions.erase(r)
 		_scouted[r.id] = true
-		s.strike(side, LiteArm.DRONE, r.label, 1, null, i * 0.8, route_to(s, s.sides[side], r.label))
+		var rd: LiteRaid = s.strike(side, LiteArm.DRONE, r.label, 1, null, i * 0.8, route_to(s, s.sides[side], r.label))
+		if rd != null:
+			rd.scout = true
 		i += 1
 
 func route_to(s: LiteSim, me: LiteSide, target: Vector2) -> Array[Vector2]:
@@ -751,10 +789,28 @@ func _site_value(s: LiteSim, b: LiteBuilding) -> float:
 			return 70.0 + 55.0 * near + (10.0 * b.kills if adaptive else 0.0)
 		LiteKind.DEPOT:
 			return 420.0
-		LiteKind.RADAR:
-			return 300.0 + 80.0 * near
+		LiteKind.RADAR, LiteKind.MRADAR:
+			# Phase 4: a radar links the air defence round it; without it its
+			# SAMs reach less far and miss more. Worth more the more it links.
+			if LiteSim.classic_rules:
+				return 300.0 + 80.0 * near
+			var links: int = 0
+			for o: LiteBuilding in s.buildings:
+				if o.alive and o.link == b:
+					links += 1
+			return (300.0 if b.kind == LiteKind.RADAR else 200.0) + 90.0 * links
+		LiteKind.MOBILE:
+			return 60.0 + 40.0 * near
+		LiteKind.OILRIG, LiteKind.SILO, LiteKind.PUMP:
+			return 180.0
+		LiteKind.REFINERY, LiteKind.SUBSTATION:
+			return 260.0
 		LiteKind.LAUNCHER:
 			return 360.0
+		LiteKind.POWER:
+			return 380.0
+		LiteKind.JAMMER:
+			return 320.0
 		LiteKind.CAPITAL:
 			var factories: int = 0
 			for o: LiteBuilding in s.buildings:
@@ -782,6 +838,9 @@ func _option(s: LiteSim, me: LiteSide, b: LiteBuilding) -> Option:
 	var missile: Option = null
 	var by_arm: Array[Option] = [null, null, null]
 	for arm: int in 3:
+		# Weapons it doesn't have yet (a campaign's first operations).
+		if not s.has_arm(side, arm):
+			continue
 		var hits: int = ceili(hp / LiteRules.damage(arm))
 		var route: Array[Vector2] = []
 		var kills: float
@@ -807,6 +866,9 @@ func _option(s: LiteSim, me: LiteSide, b: LiteBuilding) -> Option:
 		if b.kind == LiteKind.CAPITAL:
 			most *= 2
 		if count > most:
+			continue
+		# More than its stockpile could ever hold: not an option.
+		if not LiteSim.classic_rules and count > int(me.hold[arm]):
 			continue
 		var o:= Option.new()
 		o.target = b
@@ -881,9 +943,10 @@ func _attack_smart(s: LiteSim, me: LiteSide) -> void:
 		var scouts: int = 3 if factories_known < 2 else 2
 		_scout_smart(s, me, scouts)
 	var options: Array[Option] = []
+	var wf: float = me.war_fund if LiteSim.classic_rules else _stock_worth(s, me)
 	for b: LiteBuilding in known:
 		var o: Option = _option(s, me, b)
-		if o != null and o.value / o.cost >= 0.55 * clampf(700.0 / maxf(1.0, me.war_fund), 0.2, 1.0):
+		if o != null and o.value / o.cost >= 0.55 * clampf(700.0 / maxf(1.0, wf), 0.2, 1.0):
 			options.append(o)
 	if options.is_empty():
 		return
@@ -897,11 +960,12 @@ func _attack_smart(s: LiteSim, me: LiteSide) -> void:
 		if plan.size() >= most:
 			break
 		var o: Option = options[k]
-		if cost + o.cost <= maxf(me.war_fund, options[0].cost) * 1.0:
+		if cost + o.cost <= maxf(wf, options[0].cost) * 1.0:
 			plan.append(o)
 			cost += o.cost
-	var fund: float = minf(me.war_fund, me.money)
-	if fund < cost:
+	var fund: float = minf(me.war_fund, me.money) if LiteSim.classic_rules else wf
+	# Phase 4: and what its stockpiles hold, arm by arm (LiteStock).
+	if fund < cost or not _stock_ok(s, me, plan):
 		# Save for it, and warn of a large strike while doing so.
 		if _waiting_since < 0:
 			_waiting_since = s.time
@@ -919,6 +983,8 @@ func _attack_smart(s: LiteSim, me: LiteSide) -> void:
 		if cost > fund:
 			var o: Option = plan[0]
 			o.count = int(fund / LiteRules.cost(o.arm))
+			if not LiteSim.classic_rules:
+				o.count = mini(o.count, s.in_stock(side, o.arm))
 			if o.count < 3:
 				return
 	_launch(s, me, plan)
@@ -963,7 +1029,93 @@ func _scout_smart(s: LiteSim, me: LiteSide, n: int) -> void:
 		regions.erase(r)
 		_scouted[r.id] = true
 		var way: Array = _route(LiteArm.DRONE, r.label)
-		s.strike(side, LiteArm.DRONE, r.label, 1, null, i * 0.8, way[0])
+		var rd2: LiteRaid = s.strike(side, LiteArm.DRONE, r.label, 1, null, i * 0.8, way[0])
+		if rd2 != null:
+			rd2.scout = true
+
+## What its stockpiles are worth, at the weapons' old prices (the scale its
+## plans are made in; weapons themselves are free under the new rules).
+func _stock_worth(s: LiteSim, me: LiteSide) -> float:
+	var v: float = 0.0
+	for a: int in 3:
+		if s.has_arm(side, a):
+			v += floorf(me.stock[a]) * LiteRules.cost(a)
+	return v
+
+## Whether its stockpiles hold what a plan needs, arm by arm.
+func _stock_ok(s: LiteSim, me: LiteSide, plan: Array[Option]) -> bool:
+	if LiteSim.classic_rules:
+		return true
+	var need:= PackedInt32Array([0, 0, 0])
+	for o: Option in plan:
+		need[o.arm] += o.count
+		if o.mix_arm >= 0:
+			need[o.mix_arm] += o.mix_count
+	for a: int in 3:
+		if need[a] > s.in_stock(side, a):
+			return false
+	return true
+
+## Its radar network (phase 4): a long-range radar by the capital if it has
+## lost its own; then a mobile radar for air defence left without a radar's
+## picture, two or more sites of it together.
+var _net_at: float = 0.0
+func _network(s: LiteSim, me: LiteSide) -> void:
+	if s.time < _net_at:
+		return
+	_net_at = s.time + 6.0
+	var radars: int = 0
+	var unlinked: Array[LiteBuilding] = []
+	for b: LiteBuilding in s.buildings:
+		if not b.alive or b.side != side:
+			continue
+		if LiteKind.is_radar(b.kind):
+			radars += 1
+		elif b.is_ad and b.ready and not b.linked:
+			unlinked.append(b)
+	if radars == 0:
+		if afford(s, me, LiteKind.RADAR, true):
+			put(s, LiteKind.RADAR, me.capital.pos, 26, 70)
+		return
+	for b: LiteBuilding in unlinked:
+		var near: int = 0
+		for o: LiteBuilding in unlinked:
+			if o.pos.distance_to(b.pos) < 90.0:
+				near += 1
+		if near >= 3 and afford(s, me, LiteKind.RADAR, false):
+			put(s, LiteKind.RADAR, b.pos, 18, 50)
+			return
+
+## Repairs: what matters most first (factories, radars, SAMs), when it has
+## the money to spare.
+func _repairs(s: LiteSim, me: LiteSide) -> void:
+	var best: LiteBuilding = null
+	var best_v: float = 0.0
+	for b: LiteBuilding in s.buildings:
+		if b.side != side or not LiteStock.can_repair(b) or b.condition == 0:
+			continue
+		var v: float = 3.0 if b.kind == LiteKind.FACTORY else (2.5 if LiteKind.is_radar(b.kind) else (2.0 if b.kind == LiteKind.SAM else 1.0))
+		v *= 1.0 + b.condition
+		if v > best_v:
+			best_v = v
+			best = b
+	if best != null and free_money(me) >= LiteStock.repair_cost(best) + 40:
+		LiteStock.repair(s, best)
+
+## Its factories' lines: interceptors when its SAMs run short, otherwise the
+## weapons it uses most.
+var _lines_at: float = 0.0
+func _lines(s: LiteSim, me: LiteSide) -> void:
+	if s.time < _lines_at:
+		return
+	_lines_at = s.time + 15.0
+	var ammo_low: bool = me.stock[LiteStock.AMMO] < me.hold[LiteStock.AMMO] * 0.25
+	var on: PackedInt32Array = LiteStock.lines(s, side)
+	if ammo_low and on[LiteStock.AMMO] == 0:
+		for b: LiteBuilding in s.buildings:
+			if b.alive and b.side == side and b.kind == LiteKind.FACTORY and b.line == LiteStock.DRONES and on[LiteStock.DRONES] > 1:
+				b.line = LiteStock.AMMO
+				return
 
 func _factory_reserve(s: LiteSim, me: LiteSide) -> float:
 	var factories: int = 0
@@ -976,6 +1128,21 @@ func _factory_reserve(s: LiteSim, me: LiteSide) -> float:
 			room = true
 			break
 	return float(s.cost(side, LiteKind.FACTORY)) if room and factories < 2 + int(s.time / (32.0 if adaptive else 45.0)) else 0.0
+
+## Guns and mobile units close round a place (they reach only a little way;
+## one just outside its reach still covers what flies in to the place).
+var _mobile_at: float = 0.0
+func _close_cover(s: LiteSim, p: Vector2) -> float:
+	var c: float = 0.0
+	for b: LiteBuilding in s.buildings:
+		if not b.alive or b.side != side:
+			continue
+		# A gun near it; a mobile unit patrolling its region.
+		if b.kind == LiteKind.GUN and LiteSim.classic_rules and b.pos.distance_to(p) <= LiteRules.range(b.kind) + 8.0:
+			c += 1.0
+		elif (b.kind == LiteKind.MOBILE or b.kind == LiteKind.GUN) and (b.home == s.map.region_at(p) or b.pos.distance_to(p) <= LiteRules.range(b.kind) + 8.0):
+			c += 1.0
+	return c
 
 ## Air defence round what matters: rings round the capital, then cover over
 ## every factory, more of both as the war goes on; and where hits came down.
@@ -995,15 +1162,32 @@ func _defend_smart(s: LiteSim, me: LiteSide) -> void:
 		elif b.kind == LiteKind.GUN: cap_gun += 1
 	var stage: float = s.time / (150.0 if adaptive else 220.0)
 	if cap_sam == 0:
-		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 18, 55)
+		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 24, 58)
 		return
+	# Cheap mobile anti-drone units by factories and working sites with no
+	# close cover yet (phase 4).
+	var mobiles: int = 0
+	var works: int = 0
+	for b: LiteBuilding in s.buildings:
+		if b.alive and b.side == side:
+			if b.kind == LiteKind.MOBILE or (b.kind == LiteKind.GUN and not LiteSim.classic_rules):
+				mobiles += 1
+			elif b.kind == LiteKind.FACTORY or b.kind == LiteKind.REFINERY:
+				works += 1
+	if not LiteSim.classic_rules and s.time > _mobile_at and mobiles < works:
+		_mobile_at = s.time + 8.0
+		for b: LiteBuilding in s.buildings:
+			if b.alive and b.side == side and b.ready and (b.kind == LiteKind.FACTORY or LiteKind.is_works(b.kind)) and _close_cover(s, b.pos) < 1.0:
+				if free_money(me) >= LiteRules.cost_kind(LiteKind.MOBILE) + 40:
+					put(s, LiteKind.MOBILE, b.pos, 18, 22)
+				break
 	# A factory with little cover gets some at once, a SAM if there is money.
 	_exposed = false
 	for b: LiteBuilding in s.buildings:
 		if b.alive and b.side == side and b.kind == LiteKind.FACTORY and b.ready and s.coverage(side, b.pos) < 2:
 			_exposed = true
 			var kind: int = LiteKind.SAM if free_money(me) >= LiteRules.cost_kind(LiteKind.SAM) else LiteKind.GUN
-			if afford(s, me, kind, true): put(s, kind, b.pos, 10, 30)
+			if afford(s, me, kind, true): put(s, kind, b.pos, 19, 36)
 			return
 	# Beyond that, the next factory comes first, unless we are being hit.
 	var under_fire: bool = me.hit_log.size() > 0
@@ -1014,10 +1198,10 @@ func _defend_smart(s: LiteSim, me: LiteSide) -> void:
 	if not under_fire and free_money(me) < _factory_reserve(s, me) + LiteRules.cost_kind(LiteKind.GUN):
 		return
 	if cap_sam < mini(5, 1 + int(stage)):
-		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 18, 55)
+		if afford(s, me, LiteKind.SAM, true): put(s, LiteKind.SAM, me.capital.pos, 24, 58)
 		return
 	if cap_gun < mini(5, 1 + int(stage)):
-		if afford(s, me, LiteKind.GUN, true): put(s, LiteKind.GUN, me.capital.pos, 18, 55)
+		if afford(s, me, LiteKind.GUN, true): put(s, LiteKind.GUN, me.capital.pos, 24, 58)
 		return
 	# Every factory under cover, rising with the war: a SAM first (it also
 	# stops ballistic missiles), then guns against the drones.
@@ -1033,9 +1217,9 @@ func _defend_smart(s: LiteSim, me: LiteSide) -> void:
 			weakest = b
 	if weakest != null and low < want:
 		var sam: bool = low < 2 or (low < 4 and _rng.randf() < 0.4)
-		var kind: int = LiteKind.SAM if sam else LiteKind.GUN
+		var kind: int = LiteKind.SAM if sam else (LiteKind.MOBILE if not LiteSim.classic_rules and _rng.randf() < 0.4 and mobiles < works else LiteKind.GUN)
 		if afford(s, me, kind, low < 1):
-			put(s, kind, weakest.pos, 10, 34)
+			put(s, kind, weakest.pos, 19, 38)
 		return
 	for i: int in me.hit_log.size():
 		var h: LiteSide.Hit = me.hit_log[i]

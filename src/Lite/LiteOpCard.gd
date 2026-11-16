@@ -16,7 +16,7 @@ func _process(delta: float) -> void:
 	visible = m != null and main.started
 	if not visible:
 		return
-	var rows: int = 2 + (m.targets.size() if m.kind != LiteMission.HOLD else 1)
+	var rows: int = 2 + (m.targets.size() if not m.defensive else 1)
 	if m.optional != LiteMission.NONE:
 		rows += 1
 	if m.storm_until > main.sim.time:
@@ -53,7 +53,7 @@ func _draw() -> void:
 		tone = LiteGlyphs.GOOD if m.result == 0 else LiteGlyphs.ENEMY
 	_right(LiteGlyphs.bold, y, left, 10, tone)
 	y += 20.0
-	if m.kind == LiteMission.HOLD:
+	if m.defensive:
 		# Hits taken, as a bar filling towards the limit.
 		draw_string(LiteGlyphs.font, Vector2(10, y), "Enemy hits", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteGlyphs.TEXT)
 		_right(LiteGlyphs.bold, y, "%d/%d" % [m.hits, m.need], 12, LiteGlyphs.TEXT)

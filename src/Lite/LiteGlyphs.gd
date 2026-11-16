@@ -87,9 +87,28 @@ static func name(k: int) -> String:
 		LiteKind.FACTORY: return "Factory"
 		LiteKind.GUN: return "AA gun"
 		LiteKind.DEPOT: return "Ammo depot"
-		LiteKind.RADAR: return "Radar"
+		LiteKind.RADAR: return "Long-range radar"
+		LiteKind.MRADAR: return "Mobile radar"
+		LiteKind.MOBILE: return "Gun truck"
+		LiteKind.UNIT: return "Enemy unit"
+		LiteKind.OILRIG: return "Oil well"
+		LiteKind.REFINERY: return "Refinery"
+		LiteKind.SUBSTATION: return "Substation"
+		LiteKind.PUMP: return "Pumping station"
+		LiteKind.SILO: return "Grain elevator"
 		LiteKind.LAUNCHER: return "Drone launch site"
+		LiteKind.POWER: return "Power station"
+		LiteKind.JAMMER: return "EW jammer"
 		_: return "SAM"
+
+## A kind of site, more than one, as written in a line: "factories",
+## "ammo depots", "SAMs", "EW jammers".
+static func names(k: int) -> String:
+	var n: String = name(k)
+	n = n.substr(0, n.length() - 1) + "ies" if n.ends_with("y") else n + "s"
+	if n.length() > 1 and n[1] == n[1].to_lower():
+		n = n[0].to_lower() + n.substr(1)
+	return n
 
 static func name_arm(a: int) -> String:
 	match a:
@@ -110,7 +129,12 @@ static func of(k: int) -> int:
 		LiteKind.GUN: return LiteGlyph.GUN
 		LiteKind.DEPOT: return LiteGlyph.DEPOT
 		LiteKind.RADAR: return LiteGlyph.RADAR
+		LiteKind.MRADAR: return LiteGlyph.RADAR
+		LiteKind.MOBILE: return LiteGlyph.GUN
+		LiteKind.OILRIG, LiteKind.REFINERY, LiteKind.SUBSTATION, LiteKind.PUMP, LiteKind.SILO: return LiteGlyph.FACTORY
 		LiteKind.LAUNCHER: return LiteGlyph.LAUNCHER
+		LiteKind.POWER: return LiteGlyph.POWER
+		LiteKind.JAMMER: return LiteGlyph.JAMMER
 		_: return LiteGlyph.SAM
 
 static func of_arm(a: int) -> int:
@@ -134,6 +158,15 @@ const RADAR_PTS: PackedVector2Array = [
 ## A drone launch site: a rail angled up, a drone at its end.
 const LAUNCHER_PTS: PackedVector2Array = [
 	Vector2(-5.4, 4.6), Vector2(1.6, -0.4), Vector2(1.4, -3.4), Vector2(5.6, -5.0), Vector2(4.2, -0.8), Vector2(2.6, 0.8), Vector2(-3.4, 4.6),
+]
+## A power station: a lightning bolt.
+const POWER_PTS: PackedVector2Array = [
+	Vector2(1.6, -5.8), Vector2(-3.9, 0.9), Vector2(-0.4, 0.9), Vector2(-1.9, 5.8), Vector2(3.9, -1.1), Vector2(0.4, -1.1), Vector2(2.6, -5.8),
+]
+## An electronic warfare jammer: a mast with its aerials spread.
+const JAMMER_PTS: PackedVector2Array = [
+	Vector2(0, -5.8), Vector2(1.0, -2.2), Vector2(4.8, -4.0), Vector2(1.5, -0.4), Vector2(2.6, 5.0),
+	Vector2(-2.6, 5.0), Vector2(-1.5, -0.4), Vector2(-4.8, -4.0), Vector2(-1.0, -2.2),
 ]
 const SAM_PTS: PackedVector2Array = [
 	Vector2(0, -5.5), Vector2(1.6, -2.5), Vector2(1.6, 2.5), Vector2(3.2, 4.8), Vector2(-3.2, 4.8), Vector2(-1.6, 2.5), Vector2(-1.6, -2.5),
@@ -177,6 +210,8 @@ static func draw_ci(ci: CanvasItem, g: int, c: Vector2, s: float, col: Color, an
 		LiteGlyph.DEPOT: poly(ci, DEPOT_PTS, c, s, angle, col, outline)
 		LiteGlyph.RADAR: poly(ci, RADAR_PTS, c, s, angle, col, outline)
 		LiteGlyph.LAUNCHER: poly(ci, LAUNCHER_PTS, c, s, angle, col, outline)
+		LiteGlyph.POWER: poly(ci, POWER_PTS, c, s, angle, col, outline)
+		LiteGlyph.JAMMER: poly(ci, JAMMER_PTS, c, s, angle, col, outline)
 		LiteGlyph.DRONE: poly(ci, DRONE_PTS, c, s, angle, col, outline)
 		LiteGlyph.CRUISE: poly(ci, CRUISE_PTS, c, s, angle, col, outline)
 		LiteGlyph.GUN:
@@ -209,6 +244,8 @@ static func draw(b: LiteBatch, g: int, c: Vector2, s: float, col: Color, angle: 
 		LiteGlyph.DEPOT: b.shape(DEPOT_PTS, _cut(DEPOT_PTS), c, s, angle, col, outline)
 		LiteGlyph.RADAR: b.shape(RADAR_PTS, _cut(RADAR_PTS), c, s, angle, col, outline)
 		LiteGlyph.LAUNCHER: b.shape(LAUNCHER_PTS, _cut(LAUNCHER_PTS), c, s, angle, col, outline)
+		LiteGlyph.POWER: b.shape(POWER_PTS, _cut(POWER_PTS), c, s, angle, col, outline)
+		LiteGlyph.JAMMER: b.shape(JAMMER_PTS, _cut(JAMMER_PTS), c, s, angle, col, outline)
 		LiteGlyph.DRONE: b.shape(DRONE_PTS, _cut(DRONE_PTS), c, s, angle, col, outline, rim)
 		LiteGlyph.CRUISE: b.shape(CRUISE_PTS, _cut(CRUISE_PTS), c, s, angle, col, outline, rim)
 		LiteGlyph.GUN:
@@ -270,6 +307,10 @@ static func poly(ci: CanvasItem, src: PackedVector2Array, c: Vector2, s: float, 
 	ci.draw_colored_polygon(pts, fill)
 
 static func box(bg: Color, border: Color, radius: int, pad: float = 0, border_width: int = 1) -> StyleBoxFlat:
+	# Map theme hook: panels and buttons in the command look's colours.
+	bg = LiteTheme.ui(bg)
+	border = LiteTheme.ui(border)
+	radius = LiteTheme.corner(radius)
 	var b:= StyleBoxFlat.new()
 	b.bg_color = bg
 	b.border_color = border
@@ -286,4 +327,16 @@ static func box(bg: Color, border: Color, radius: int, pad: float = 0, border_wi
 	b.content_margin_top = pad
 	b.content_margin_bottom = pad
 	b.anti_aliasing = true
+	if LiteTheme.command:
+		# The command look's pixel panels (see LiteCmdStyle): corners cut off
+		# square (one-step corners), crisp edges, a heavier edge underneath.
+		var cut: int = 0 if radius <= 0 else clampi(radius * 2, 3, 5)
+		b.corner_radius_top_left = cut
+		b.corner_radius_top_right = cut
+		b.corner_radius_bottom_left = cut
+		b.corner_radius_bottom_right = cut
+		b.corner_detail = 1
+		b.anti_aliasing = false
+		if border_width > 0:
+			b.border_width_bottom = border_width + 1
 	return b

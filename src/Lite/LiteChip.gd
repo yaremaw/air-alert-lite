@@ -54,8 +54,16 @@ func _draw() -> void:
 	LitePerf.ui_ms += LitePerf.now - t0
 
 func _draw_body() -> void:
-	_box.bg_color = LiteGlyphs.PANEL.lerp(LiteGlyphs.PANEL_HI, _hover).lerp(accent.darkened(0.6), _sel)
-	_box.border_color = LiteGlyphs.LINE.lerp(accent, _sel)
+	# Map theme hook: the command look's colours (LiteTheme.ui).
+	var acc: Color = LiteTheme.ui(accent)
+	_box.bg_color = LiteTheme.ui(LiteGlyphs.PANEL).lerp(LiteTheme.ui(LiteGlyphs.PANEL_HI), _hover).lerp(acc.darkened(0.6), _sel)
+	_box.border_color = LiteTheme.ui(LiteGlyphs.LINE).lerp(acc, _sel)
 	draw_style_box(_box, Rect2(Vector2.ZERO, size))
 	var col: Color = LiteGlyphs.MUTED.lerp(Color.WHITE, maxf(_sel, _hover * 0.6))
 	draw_string(LiteGlyphs.bold, Vector2(0, size.y / 2 + font_size * 0.36), text, HORIZONTAL_ALIGNMENT_CENTER, size.x, font_size, col)
+
+## Hidden (itself or a parent), it does no work frame by frame: with dozens
+## of these in the menus and the HUD, their _process added up.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED or what == NOTIFICATION_READY:
+		set_process(is_visible_in_tree())

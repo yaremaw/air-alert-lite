@@ -10,6 +10,10 @@ const NONE: int = 255
 const CITY_R: float = 15.0
 
 var seed: int = 0
+## The whole map's climate (LiteBiome.TEMPERATE, ARID, FROZEN), -1 until
+## first asked (then from its seed, see LiteBiome.climate); an operation's
+## map takes its war's.
+var climate: int = -1
 
 var ids: PackedByteArray = PackedByteArray()
 
@@ -123,14 +127,346 @@ static func baked_count() -> int:
 			_baked_count += 1
 	return _baked_count
 
-## The map for a seed: a baked one when there are any, else generated.
+## The map for a seed: a baked one when there are any, else generated; its
+## smallest provinces merged (see merge_small).
 static func for_seed(p_seed: int) -> LiteMap:
 	var n: int = baked_count() if use_baked else 0
+	var m: LiteMap = null
 	if n > 0:
-		var m: LiteMap = load_baked(posmod(p_seed, n))
-		if m != null:
-			return m
-	return generate(p_seed)
+		m = load_baked(posmod(p_seed, n))
+	if m == null:
+		m = generate(p_seed)
+	m.merge_small()
+	return m
+
+## Fills in water the open sea reaches only through a narrow neck (a lake, or
+## a round bay nearly closed off: unnatural shapes left by the coast's bays),
+## up to `most` map units each, with the land round it: each unit goes to its
+## nearest province and district. Returns how many units were filled. Run
+## once over the baked maps (`--lite-fix-bays`), not on every load.
+func fill_bays(neck: int = 7, most: int = 5000) -> int:
+	var n: int = W * H
+	const FAR: int = 1 << 20
+	# Distance to land, in map units (4 steps).
+	var dist:= PackedInt32Array()
+	dist.resize(n)
+	dist.fill(FAR)
+	var q:= PackedInt32Array()
+	for i: int in n:
+		if cell[i] != NONE:
+			dist[i] = 0
+			q.append(i)
+	var h: int = 0
+	while h < q.size():
+		var i: int = q[h]
+		h += 1
+		var x: int = i % W
+		var y: int = i / W
+		for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+			if j >= 0 and dist[j] == FAR:
+				dist[j] = dist[i] + 1
+				q.append(j)
+	# The open sea: from the edges, through water at least `neck` from land,
+	# then back out to the coasts it touches.
+	var open:= PackedByteArray()
+	open.resize(n)
+	q = PackedInt32Array()
+	for i: int in n:
+		var x: int = i % W
+		var y: int = i / W
+		if (x == 0 or y == 0 or x == W - 1 or y == H - 1) and cell[i] == NONE and dist[i] >= neck:
+			open[i] = 1
+			q.append(i)
+	h = 0
+	while h < q.size():
+		var i: int = q[h]
+		h += 1
+		var x: int = i % W
+		var y: int = i / W
+		for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+			if j >= 0 and open[j] == 0 and dist[j] >= neck:
+				open[j] = 1
+				q.append(j)
+	# Back out to the shore: every water unit within `neck` + 1 of open sea.
+	var step:= PackedInt32Array()
+	step.resize(n)
+	h = 0
+	var grow:= PackedInt32Array(q)
+	while h < grow.size():
+		var i: int = grow[h]
+		h += 1
+		if step[i] > neck + 1:
+			continue
+		var x: int = i % W
+		var y: int = i / W
+		for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+			if j >= 0 and open[j] == 0 and cell[j] == NONE:
+				open[j] = 1
+				step[j] = step[i] + 1
+				grow.append(j)
+	# What water is left: lakes and bays behind a narrow neck. Small enough,
+	# filled from the land round it, nearest first.
+	var seen:= PackedByteArray()
+	seen.resize(n)
+	var filled: int = 0
+	for s: int in n:
+		if cell[s] != NONE or open[s] == 1 or seen[s] == 1:
+			continue
+		var comp:= PackedInt32Array([s])
+		seen[s] = 1
+		h = 0
+		while h < comp.size():
+			var i: int = comp[h]
+			h += 1
+			var x: int = i % W
+			var y: int = i / W
+			for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+				if j >= 0 and seen[j] == 0 and cell[j] == NONE and open[j] == 0:
+					seen[j] = 1
+					comp.append(j)
+		if comp.size() > most:
+			continue
+		var todo: Dictionary = {}
+		for i: int in comp:
+			todo[i] = true
+		var front:= PackedInt32Array()
+		var on_front: Dictionary = {}
+		for i: int in comp:
+			var x: int = i % W
+			var y: int = i / W
+			for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+				if j >= 0 and cell[j] != NONE and not on_front.has(j):
+					on_front[j] = true
+					front.append(j)
+		h = 0
+		while h < front.size() and not todo.is_empty():
+			var i: int = front[h]
+			h += 1
+			var x: int = i % W
+			var y: int = i / W
+			for j: int in [i - 1 if x > 0 else -1, i + 1 if x < W - 1 else -1, i - W if y > 0 else -1, i + W if y < H - 1 else -1]:
+				if j >= 0 and todo.has(j):
+					todo.erase(j)
+					cell[j] = cell[i]
+					if sub.size() == n:
+						sub[j] = sub[i]
+					var r: LiteRegion = regions[cell[j]]
+					r.area += 1
+					var jx: int = j % W
+					var jy: int = j / W
+					for dy: int in S:
+						for dx: int in S:
+							ids[(jy * S + dy) * RW + jx * S + dx] = cell[j]
+					filled += 1
+					front.append(j)
+	return filled
+
+## The most provinces a side has: the map is scaled to fill the screen, so
+## the more provinces, the smaller each looks.
+const MAX_PROVINCES: int = 14
+## Smaller than this share of its side's average, a province is merged too.
+const MIN_SHARE: float = 0.45
+
+## Provinces about the same size from map to map: on a map cut into many,
+## the smallest province of a side with too many (or one far smaller than the
+## rest) joins its smallest neighbour of the same side, until neither side
+## has more than MAX_PROVINCES. Capitals' provinces are never merged away,
+## cities follow their province, districts stay as they are. The same map
+## always merges the same way.
+func merge_small() -> void:
+	var dead:= PackedByteArray()
+	dead.resize(regions.size())
+	var stuck: Dictionary = {}
+	var keep: Array[int] = [capital_province(0), capital_province(1)]
+	var merged: bool = false
+	while true:
+		var pick: int = -1
+		for side: int in 2:
+			var count: int = 0
+			var total: float = 0.0
+			var small: int = -1
+			for r: LiteRegion in regions:
+				if r.city or r.side != side or dead[r.id] == 1:
+					continue
+				count += 1
+				total += r.area
+				if not keep.has(r.id) and not stuck.has(r.id) and (small < 0 or r.area < regions[small].area):
+					small = r.id
+			if small < 0:
+				continue
+			if count > MAX_PROVINCES or regions[small].area < total / count * MIN_SHARE:
+				if pick < 0 or regions[small].area < regions[pick].area:
+					pick = small
+		if pick < 0:
+			break
+		var into: int = -1
+		for n: int in provinces_next_to(pick):
+			if regions[n].side == regions[pick].side and dead[n] == 0 and (into < 0 or regions[n].area < regions[into].area):
+				into = n
+		if into < 0:
+			stuck[pick] = true
+			continue
+		_merge(pick, into)
+		dead[pick] = 1
+		merged = true
+	if merged:
+		_renumber_live(dead)
+
+## Province `from` joins province `into`: its land, spots and borders.
+func _merge(from: int, into: int) -> void:
+	var a: LiteRegion = regions[from]
+	var b: LiteRegion = regions[into]
+	# Its name moves to the middle of the two, weighted by size.
+	var w: float = float(a.area) / maxf(1.0, a.area + b.area)
+	var mid: Vector2 = b.label.lerp(a.label, w * 0.5)
+	if province(region_at(mid)) == into or province(region_at(mid)) == from:
+		b.label = mid
+	b.center = b.center.lerp(a.center, w)
+	b.area += a.area
+	b.spots.append_array(a.spots)
+	for r: LiteRegion in regions:
+		if r.neighbors.has(from):
+			r.neighbors.erase(from)
+			if r.id != into:
+				r.neighbors[into] = true
+				b.neighbors[r.id] = true
+		if r.city and r.parent == from:
+			r.parent = into
+	b.neighbors.erase(from)
+	b.neighbors.erase(into)
+	a.area = 0
+	a.spots.clear()
+	a.neighbors.clear()
+	# Its texels are its new province's from now on (the id texture and the
+	# map units, below in _renumber_live; here the region list only).
+	_merged_into[from] = into
+
+var _merged_into: Dictionary = {}
+
+## The regions left after merging, numbered from 0 again; the id texture and
+## the map units rewritten to match.
+func _renumber_live(dead: PackedByteArray) -> void:
+	var to:= PackedInt32Array()
+	to.resize(256)
+	to.fill(NONE)
+	var live: Array[LiteRegion] = []
+	for r: LiteRegion in regions:
+		if dead[r.id] == 0:
+			to[r.id] = live.size()
+			live.append(r)
+	for old: int in regions.size():
+		if dead[old] == 1:
+			var t: int = old
+			while dead[t] == 1:
+				t = _merged_into[t]
+			to[old] = to[t]
+	for r: LiteRegion in live:
+		var nb: Dictionary[int, bool] = {}
+		for n: int in r.neighbors:
+			if to[n] != NONE and to[n] != to[r.id]:
+				nb[to[n]] = true
+		r.neighbors = nb
+		if r.parent >= 0:
+			r.parent = to[r.parent]
+		r.id = to[r.id]
+	regions = live
+	var lut:= PackedByteArray()
+	lut.resize(256)
+	for i: int in 256:
+		lut[i] = to[i] if to[i] != NONE else NONE
+	lut[NONE] = NONE
+	for i: int in ids.size():
+		ids[i] = lut[ids[i]]
+	for i: int in cell.size():
+		cell[i] = lut[cell[i]]
+	edge = PackedFloat32Array()
+	_merged_into.clear()
+
+## Widens the map about the middle of its land: `sx` across, `sy` up and
+## down (under 1 squashes it), so the two countries come out as wide as the
+## screen they are shown on. Every layer goes through the same change: the
+## region ids, the districts, the world round them and its names, the
+## capitals, each region's label, centre and building spots. Run once over the
+## baked maps (`--lite-widen`), not on every load.
+func stretch(sx: float, sy: float) -> void:
+	var c: Vector2 = land_rect.get_center()
+	var sc:= Vector2(sx, sy)
+	var to_new: Callable = func(p: Vector2) -> Vector2: return c + (p - c) * sc
+	# The fine id texture, texel by texel, from where each now comes from.
+	var nids:= PackedByteArray()
+	nids.resize(RW * RH)
+	for y: int in RH:
+		var oy: int = int(floor((c.y + ((y + 0.5) / S - c.y) / sy) * S))
+		var row: int = y * RW
+		if oy < 0 or oy >= RH:
+			for x: int in RW:
+				nids[row + x] = NONE
+			continue
+		var orow: int = oy * RW
+		for x: int in RW:
+			var ox: int = int(floor((c.x + ((x + 0.5) / S - c.x) / sx) * S))
+			nids[row + x] = ids[orow + ox] if ox >= 0 and ox < RW else NONE
+	ids = nids
+	if sub.size() == W * H:
+		var nsub:= PackedByteArray()
+		nsub.resize(W * H)
+		for y: int in H:
+			var oy: int = int(floor(c.y + (y + 0.5 - c.y) / sy))
+			for x: int in W:
+				var ox: int = int(floor(c.x + (x + 0.5 - c.x) / sx))
+				nsub[y * W + x] = sub[oy * W + ox] if ox >= 0 and oy >= 0 and ox < W and oy < H else NONE
+		sub = nsub
+	var cl:= PackedByteArray()
+	cl.resize(W * H)
+	for y: int in H:
+		var ro: int = (y * S + 1) * RW + 1
+		for x: int in W:
+			cl[y * W + x] = ids[ro + x * S]
+	cell = cl
+	edge = PackedFloat32Array()
+	for i: int in capital.size():
+		capital[i] = to_new.call(capital[i])
+	var areas:= PackedInt32Array()
+	areas.resize(regions.size())
+	for v: int in cell:
+		if v != NONE and v < areas.size():
+			areas[v] += 1
+	for r: LiteRegion in regions:
+		r.label = to_new.call(r.label)
+		r.center = to_new.call(r.center)
+		var spots: Array[Vector2] = []
+		for p: Vector2 in r.spots:
+			spots.append(to_new.call(p))
+		r.spots = spots
+		r.area = areas[r.id]
+	land_rect = Rect2(to_new.call(land_rect.position), land_rect.size * sc)
+	if world != null:
+		var w: LiteWorld = world
+		var nw:= PackedByteArray()
+		nw.resize(LiteWorld.WW * LiteWorld.WH)
+		for y: int in LiteWorld.WH:
+			for x: int in LiteWorld.WW:
+				var p: Vector2 = LiteWorld.cell_pos(x, y)
+				var o: Vector2 = c + (p - c) / sc
+				var gx: int = int(floor((o.x + LiteWorld.PAD.x) / LiteWorld.K))
+				var gy: int = int(floor((o.y + LiteWorld.PAD.y) / LiteWorld.K))
+				nw[y * LiteWorld.WW + x] = w.ids[gy * LiteWorld.WW + gx] if gx >= 0 and gy >= 0 and gx < LiteWorld.WW and gy < LiteWorld.WH else LiteWorld.SEA
+		w.ids = nw
+		for i: int in w.label_at.size():
+			w.label_at[i] = to_new.call(w.label_at[i])
+
+## How much to widen a baked map (see stretch): as wide as fits, then
+## squashed up and down until its land is about `aspect` wide to 1 tall,
+## never below 0.75.
+func widen_factors(aspect: float = 1.85) -> Vector2:
+	var c: Vector2 = land_rect.get_center()
+	var lo: Vector2 = land_rect.position
+	var hi: Vector2 = land_rect.end
+	var sx: float = minf(1.10, minf((c.x - 10.0) / maxf(1.0, c.x - lo.x), (W - 10.0 - c.x) / maxf(1.0, hi.x - c.x)))
+	sx = maxf(1.0, sx)
+	var now: float = land_rect.size.x * sx / land_rect.size.y
+	var sy: float = clampf(now / aspect, 0.75, 1.0)
+	return Vector2(sx, sy)
 
 func save_baked(path: String) -> Error:
 	var regs: Array = []
@@ -237,6 +573,77 @@ func shapes() -> Array:
 		var rad: float = maxf(1.0, inner[r.id])
 		out.append([r.id, r.area / (PI * rad * rad), rad])
 	return out
+
+## The towns and cities on the map, as the terrain paints them (see
+## LiteTerrain's towns()): [middle, reach] in map units each, a capital's
+## city too. Nothing is built on them (LiteSim.can_place).
+var _built_up: Array = []
+
+func built_up() -> Array:
+	if not _built_up.is_empty():
+		return _built_up
+	var art: float = LiteTerrain.ART
+	var areas: Array[int] = []
+	for r: LiteRegion in regions:
+		if r.label != Vector2.ZERO and not r.city:
+			areas.append(r.area)
+	areas.sort()
+	var big: int = areas[int(areas.size() * 0.8)] if not areas.is_empty() else 0
+	var mid: int = areas[int(areas.size() * 0.45)] if not areas.is_empty() else 0
+	for r: LiteRegion in regions:
+		if r.label == Vector2.ZERO or r.city:
+			continue
+		var rr: float = 5.0
+		if r.area >= big:
+			rr = clampf(sqrt(float(r.area)) / 4.6, 9.0, 14.0)
+		elif r.area >= mid:
+			rr = clampf(sqrt(float(r.area)) / 6.5, 5.0, 8.0)
+		_built_up.append([settle_spot(r, rr * art), rr * art])
+	for side: int in 2:
+		if capital[side] != Vector2.ZERO:
+			_built_up.append([capital[side], 31.0 * art])
+	return _built_up
+
+## Whether `p` is in a town or city, `margin` map units round it included.
+func in_town(p: Vector2, margin: float = 0.0) -> bool:
+	for t: Array in built_up():
+		var rr: float = float(t[1]) + margin
+		if p.distance_squared_to(t[0]) < rr * rr:
+			return true
+	return false
+
+## Where a settlement of `reach` map units fits in region `r`: just under
+## its name if it fits there whole, else the nearest of the region's spots
+## (or above the name) where it does, clear of the name itself.
+func settle_spot(r: LiteRegion, reach: float) -> Vector2:
+	var tries: Array[Vector2] = [r.label + Vector2(0, reach + 7.0), r.label + Vector2(0, -reach - 9.0)]
+	var spots: Array[Vector2] = r.spots.duplicate()
+	spots.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.distance_squared_to(r.label) < b.distance_squared_to(r.label))
+	for p: Vector2 in spots.slice(0, 40):
+		if p.distance_to(r.label) > reach + 6.0:
+			tries.append(p)
+	for p: Vector2 in tries:
+		var ok: bool = true
+		for k: int in 8:
+			if region_at(p + Vector2.from_angle(k * TAU / 8.0) * reach) != r.id:
+				ok = false
+				break
+		if ok:
+			return p
+	return r.label + Vector2(0, reach + 7.0)
+
+## Whether `p` is open sea: not the two countries, and not a neighbouring
+## country either (the world round them, LiteWorld; to the war it is all
+## NONE alike).
+func is_sea(p: Vector2) -> bool:
+	if region_at(p) != NONE:
+		return false
+	if world == null:
+		return true
+	var c:= Vector2i(((p + LiteWorld.PAD) / float(LiteWorld.K)).floor())
+	if c.x < 0 or c.y < 0 or c.x >= LiteWorld.WW or c.y >= LiteWorld.WH:
+		return true
+	return world.ids[c.y * LiteWorld.WW + c.x] == LiteWorld.SEA
 
 func region_at(p: Vector2) -> int:
 	var x: int = int(p.x)

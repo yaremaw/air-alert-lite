@@ -40,6 +40,13 @@ func _draw() -> void:
 ## ticks across it) and the white drone, nose up and to the right, as on the cover.
 ## Also the badge in the corner of the map (LiteHud).
 static func draw_mark(ci: CanvasItem, c: Vector2, r: float) -> void:
+	# The official emblem (assets/ui/logo_mark.png, as on the icon and the
+	# store page), resampled to the size drawn so it stays sharp.
+	var px: int = maxi(8, roundi(r * MARK_SPAN))
+	var tex: Texture2D = _mark(px)
+	if tex != null:
+		ci.draw_texture_rect(tex, Rect2(c - Vector2(px, px) * 0.5, Vector2(px, px)), false)
+		return
 	var line: float = r * 0.175
 	ci.draw_arc(c, r, 0, TAU, 72, LiteGlyphs.ENEMY, line, true)
 	for a: float in [0.0, PI / 2, PI, PI * 1.5]:
@@ -53,3 +60,26 @@ static func draw_mark(ci: CanvasItem, c: Vector2, r: float) -> void:
 	for p: Vector2 in outline:
 		pts.append(c + (p * r * 0.8 + Vector2(r * 0.06, 0)).rotated(rot))
 	ci.draw_colored_polygon(pts, Color("#eef0f3"))
+
+## The emblem's image is this many times its ring's radius across.
+const MARK_SPAN: float = 2.63
+static var _mark_src: Image = null
+static var _mark_cache: Dictionary = {}
+
+static func _mark(px: int) -> Texture2D:
+	if _mark_cache.has(px):
+		return _mark_cache[px]
+	if _mark_src == null:
+		var t: Texture2D = load("res://assets/ui/logo_mark.png") as Texture2D
+		if t == null:
+			return null
+		_mark_src = t.get_image()
+		if _mark_src == null:
+			return null
+		if _mark_src.is_compressed():
+			_mark_src.decompress()
+	var img: Image = _mark_src.duplicate()
+	img.resize(px, px, Image.INTERPOLATE_LANCZOS)
+	var tex: ImageTexture = ImageTexture.create_from_image(img)
+	_mark_cache[px] = tex
+	return tex

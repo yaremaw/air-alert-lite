@@ -27,6 +27,16 @@ var _end_timer: float = -1
 var _last_capital_post: float = -99
 ## When each side's guns last fired (sim time), so their sound lasts as long as the firing.
 var gun_shot_at: Array[float] = [-99.0, -99.0]
+## Whether the cast talks over the radio during play (off, see _say).
+const RADIO: bool = false
+## The bomb in hand (see LiteSim.nuke).
+var nuke_tool: bool = false
+## A train's wagons already paid for (see _operation_events).
+var _wagons_paid: int = 0
+## The player at one of our guns, or null (see LiteGunner).
+var gunner: LiteGunner = null
+## When each side's machine guns (on the pickups) last fired.
+var mg_shot_at: Array[float] = [-99.0, -99.0]
 var _autoplay: bool = false
 
 var _fake_mouse: Variant = null
@@ -46,6 +56,12 @@ var front_options: Array[int] = []
 var front_pick: int = -1
 ## On the front, each region's province its name (and badge) is on.
 var front_labels: Dictionary = {}
+## Whether the player has picked a region on the front (the command look
+## shows the card for it then, not before).
+var front_chosen: bool = false
+## The Modern Military Command interface, made once that map theme is chosen
+## (see src/Lite/command/LiteTheme.gd); null in the legacy look.
+var cmd_ui: LiteCmdUi = null
 
 
 ## The enemy's income on Easy, Normal and Hard. Hard was 1.3 until the maps
@@ -93,6 +109,8 @@ func _ready() -> void:
 
 	LiteSettings.load()
 	LiteSettings.apply_sound()
+	# Map theme hook: Legacy unless chosen otherwise (src/Lite/command/).
+	LiteTheme.setup()
 	if not OS.has_feature("web"):
 		DisplayServer.window_set_title("Strike Alert")
 	audio = LiteAudio.new()
@@ -102,7 +120,18 @@ func _ready() -> void:
 	ui.main = self
 	add_child(ui)
 	ui.build()
+	LiteTheme.ensure_ui(self)
 	ui.show_menu()
+	# Achievements won show as a toast over everything.
+	var toast_layer:= CanvasLayer.new()
+	toast_layer.layer = 60
+	add_child(toast_layer)
+	var toast:= LiteAchievementsView.Toast.new()
+	toast.main = self
+	toast_layer.add_child(toast)
+	LiteAchievements.on_unlock = func(a: Dictionary) -> void:
+		toast.show_one(a)
+		audio.play("all_clear.wav", -16.0, 0.5, 0.0)
 	if shots != null:
 		run_shots(shots, maps)
 	for a: String in OS.get_cmdline_user_args():
@@ -231,23 +260,51 @@ func new_world(seed_: int) -> void:
 
 ## Puts a map up for a war: a new war on it and the view to show it.
 func show_map(m: LiteMap, sim_seed: int, t0: int = 0) -> void:
+	if gunner != null:
+		gunner.leave()
+	_our_capital_hit = false
+	_count_at = 0.0
+	_cap_ballistic = 0
+	_cap_other = false
+	_launched_other = false
+	_built_sam = false
+	_refineries = 0
+	_radars = 0
+	_wagons_paid = 0
 	map = m
 	sim = LiteSim.new(map, sim_seed)
 	gun_shot_at = [-99.0, -99.0]
+	mg_shot_at = [-99.0, -99.0]
+	# What the pointer was over belonged to the last map.
+	hover_building = null
+	hover_region = -1
+	strike_snap = null
 	print("[lite] map %d: %d regions in %d ms" % [sim_seed, map.regions.size(), Time.get_ticks_msec() - t0])
+	rebuild_view()
+
+## Draws the map (again) in the map theme now chosen: the legacy LiteView, or
+## the Modern Military Command look (LiteCmdView, src/Lite/command/). Only the
+## drawing is made anew; the war on the map is untouched.
+func rebuild_view() -> void:
 	if _view != null:
 		_view.queue_free()
-	_view = LiteView.new()
+	_view = LiteCmdView.new() if LiteTheme.battle_view(self) else LiteView.new()
 	_view.main = self
 	add_child(_view)
 	move_child(_view, 0)
 	_view.build()
+	if front_open and campaign != null:
+		_view.set_groups(campaign.group_of)
+	RenderingServer.set_default_clear_color(LiteTheme.clear_color(self))
 	fit_view()
 
 
 ## The map is static: scaled once so the land fills the map area (the
 ## screen left of the panel), centred, never panned or zoomed after.
 func fit_view() -> void:
+	# Map theme hook: the command look fits the map inside its own bars.
+	if LiteTheme.fit(self):
+		return
 	var land: Rect2 = map.land_rect.grow(14)
 	# A little clear of the top, where the air alert banner sits.
 	var frame:= Rect2(6, 30, LiteMap.W - 12, LiteMap.H - 36)
@@ -287,13 +344,25 @@ func new_game() -> void:
 		_leave_campaign()
 		new_world((seed * 7919 + 104729) % 1000003)
 	_start_war(LiteSettings.difficulty)
+	# Jet drones, once won in the campaign, are ours in a single war too.
+	sim.jet_drones[0] = LiteSettings.jets and not LiteSim.classic_rules
 	paused = false
-	ui.post("War. The enemy capital is %s; its factories repair it. Its other sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
+	ui.post("War. Break the enemy's will: strike %s and what keeps its country going. Its sites are hidden: drones will find them." % map.capital_name[1], LiteGlyphs.MUTED)
 	if not _autoplay:
-		ui.tips_war()
+		_theatre(ui.tips_war)
+
+## The theatre of war (plains, desert, winter) over the whole screen, then
+## `then`; straight on to `then` in a test or the legacy look.
+func _theatre(then: Callable) -> void:
+	if cmd_ui != null and cmd_ui.theatre != null and LiteTheme.command and not _autoplay and not LiteSettings.dry:
+		cmd_ui.theatre.play(LiteBiome.climate(map), then)
+	else:
+		then.call()
 
 func _start_war(d: int) -> void:
 	started = true
+	# Every war and every operation starts at normal speed.
+	speed = 1
 	build_tool = null
 	strike_tool = null
 	_end_timer = -1
@@ -320,10 +389,13 @@ func start_campaign(fresh: bool, map_seed: int = -1) -> void:
 		var c: LiteCampaign = LiteCampaign.fresh(map_seed if map_seed >= 0 else int(fmod(Time.get_unix_time_from_system(), 1000003.0)), LiteSettings.difficulty)
 		c.save()
 		campaign = c
+		_intro = true
 	else:
 		campaign = LiteCampaign.load_saved()
 		if campaign == null:
 			return
+		# A campaign continued before its opening was ever shown gets it now.
+		_intro = not campaign.intro_seen
 	show_front()
 
 ## The front between operations: the war's map as the campaign has left it,
@@ -352,6 +424,7 @@ func show_front() -> void:
 	sim.buildings = keep
 	clock_offset = c.clock
 	front_open = true
+	front_chosen = false
 	front_options = c.options(war_map)
 	front_pick = front_options[0] if not front_options.is_empty() else -1
 	# The front shows the campaign's regions: one name each, the provinces
@@ -360,15 +433,160 @@ func show_front() -> void:
 	_view.set_groups(c.group_of)
 	ui.clear_feed()
 	ui.show_front(c)
-	if not _autoplay:
+	# What came up since the last operation: its page, once the front's own
+	# slides are done (see _process).
+	_event_pending = not c.events_next.is_empty() and c.events_shown != c.ops and not _autoplay
+	# What the last operation won or lost changes hands before the player's
+	# eyes: drawn as it was, then handed over a province at a time.
+	if not c.last_change.is_empty() or not c.fallen.is_empty() or c.new_offensive:
+		var gains: Array[int] = c.last_change.duplicate()
+		var to: int = c.last_change_to
+		var fallen: Array[int] = c.fallen.duplicate()
+		c.last_change = []
+		c.fallen = []
+		for p: int in gains:
+			war_map.give(p, 1 - to)
+		for p: int in fallen:
+			war_map.give(p, 0)
+		_view.refresh_sides()
+		_front_changes(c, gains, to, fallen)
+	elif _intro and not _autoplay:
+		# A new campaign opens with its story, then the front's tips.
+		_intro = false
+		c.intro_seen = true
+		c.save()
+		ui.slides.play(LiteStory.intro(war_map), func() -> void: _theatre(ui.tips_front))
+	elif not _autoplay:
 		ui.tips_front()
+
+## What the last operation changed, shown on the front one after another:
+## the region it won or lost changing hands, a slide for it; a region that
+## fell to an offensive nobody met; a new offensive coming.
+var _event_pending: bool = false
+
+## The event page, when nothing else is on screen.
+func _show_pending_event() -> void:
+	if not _event_pending or campaign == null or not front_open:
+		return
+	if ui.slides.visible or ui.page_open or ui.menu_open:
+		return
+	# No page for it (the user found them in the way): the event still
+	# shapes the next operation, and its card says so.
+	_event_pending = false
+	campaign.events_shown = campaign.ops
+
+func _front_changes(c: LiteCampaign, gains: Array[int], to: int, fallen: Array[int]) -> void:
+	var m0: LiteMap = map
+	var slides: Array = []
+	if not gains.is_empty():
+		var g: int = c.group_at(gains[0])
+		# Taken by us: the result page already showed its picture.
+		await _capture(gains, to, c.group_name(war_map, g))
+	if map != m0:
+		return
+	if not fallen.is_empty():
+		await _capture(fallen, 1, c.group_name(war_map, c.group_at(fallen[0])))
+	if map != m0:
+		return
+	# No pictures popping up over the front (they came too soon after the
+	# result page): a new offensive is a short announcement over the map,
+	# a few seconds in, and its region marked among the options.
+	var offensive: bool = c.new_offensive and c.counter >= 0
+	c.new_offensive = false
+	if _autoplay:
+		return
+	if offensive:
+		await _wait(2.5)
+		if map != m0 or not front_open:
+			return
+		_announce("ENEMY OFFENSIVE", "Their columns are moving on %s. Hold it, or lose it." % c.group_name(war_map, c.counter), false, 3.0)
+		await _wait(3.2)
+		if map != m0 or not front_open:
+			return
+	ui.tips_front()
+
+## A new campaign's opening story is still to be told (see show_front).
+var _intro: bool = false
+
+## Provinces going over to `to`, one after another, with an announcement.
+func _capture(provs: Array[int], to: int, region: String) -> void:
+	var m0: LiteMap = map
+	await _wait(0.7)
+	if map != m0:
+		return
+	var character: int = campaign.character(campaign.group_at(provs[0])) if campaign != null else -1
+	_announce("%s %s" % [region.to_upper(), "TAKEN" if to == 0 else "LOST"], LiteStory.capture_line(character, to), to == 0, 2.6)
+	for p: int in provs:
+		if map != m0:
+			return
+		map.give(p, to)
+		_view.refresh_sides()
+		audio.play("explosion_b.wav", -16.0, 0.2)
+		await _wait(0.32)
+
+## Takes the announcement down (an end screen is opening).
+func _announce_clear() -> void:
+	if cmd_ui != null and cmd_ui.announce != null:
+		cmd_ui.announce.clear()
+
+## A big announcement over the map (the command look's; none in the legacy look).
+func _announce(title: String, sub: String, good: bool, hold: float) -> void:
+	if cmd_ui != null and cmd_ui.announce != null:
+		cmd_ui.announce.show_text(title, sub, LiteTheme.BLUE if good else LiteTheme.RED, hold)
+
+## The end of a war on its map: the loser's provinces go over to the winner a
+## band at a time, from the front inwards. What is still in the air is gone
+## and the alerts lifted, so only the two countries show.
+func _conquest(winner: int) -> void:
+	var m0: LiteMap = map
+	for w: LiteWeapon in sim.weapons:
+		w.alive = false
+	for i: LiteInterceptor in sim.interceptors:
+		i.alive = false
+	sim.alert.fill(false)
+	sim.missile.fill(false)
+	sim.ballistic.fill(false)
+	sim.sub_alert.fill(0)
+	var left: Dictionary = {}
+	for r: LiteRegion in map.regions:
+		if not r.city and r.side != winner:
+			left[r.id] = true
+	var layer: Array[int] = []
+	for id: int in left:
+		for n: int in map.provinces_next_to(id):
+			if map.regions[n].side == winner:
+				layer.append(id)
+				break
+	while not left.is_empty():
+		if layer.is_empty():
+			for id: int in left:
+				layer.append(id)
+		for id: int in layer:
+			map.give(id, winner)
+			left.erase(id)
+		_view.refresh_sides()
+		audio.play("explosion_b.wav", -18.0, 0.2)
+		await _wait(0.38)
+		if map != m0:
+			return
+		var next: Array[int] = []
+		for id: int in layer:
+			for n: int in map.provinces_next_to(id):
+				if left.has(n) and not next.has(n):
+					next.append(n)
+		layer = next
 
 ## The province picked on the front (from the list or the map).
 func pick_front(province: int) -> void:
 	if front_options.has(province):
 		front_pick = province
+		front_chosen = true
 		ui.show_front(campaign)
 		audio.click()
+	elif front_chosen:
+		# A click elsewhere on the map puts the card away.
+		front_chosen = false
+		ui.show_front(campaign)
 
 ## An operation over the picked province: its map built (a few seconds, with
 ## a notice up meanwhile), the war set up on it, then the briefing.
@@ -378,12 +596,15 @@ func launch_operation() -> void:
 	if province < 0:
 		return
 	ui.close_front()
-	ui.show_loading("Preparing the operation in %s…" % war_map.regions[province].name)
+	_announce_clear()
+	# The operation's picture and name at once, a bar filling while its map
+	# is made.
+	ui.show_briefing(c.preview(war_map, province), c, true)
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var m: LiteMap = await LiteRegionMap.build(war_map, c.group(province), province, c.map_seed * 131 + c.ops * 17 + province, self)
-	ui.close_loading()
 	if m == null:
+		ui.close_briefing()
 		ui.show_front(c)
 		refuse("No operation is possible there")
 		return
@@ -392,17 +613,72 @@ func launch_operation() -> void:
 	show_map(m, c.map_seed + c.ops * 977)
 	_start_war(c.difficulty)
 	c.setup(mission, sim, sim.ai[1])
+	# A night operation starts at ten at night (the war's clock: 21:00 plus
+	# half an hour a second).
+	if mission.conditions.has(LiteMission.C_NIGHT):
+		clock_offset = c.clock - fposmod(c.clock, LiteRules.DAY) + 2.0
 	paused = true
+	if mission.kind == LiteMission.CAPITAL:
+		var all_taken: bool = true
+		var cap_g: int = c.group_at(war_map.capital_province(1))
+		for r: LiteRegion in war_map.regions:
+			if r.side == 1 and not r.city and c.group_at(r.id) != cap_g:
+				all_taken = false
+				break
+		sim.nuke_ready[0] = all_taken
 	ui.post("%s. %s" % [mission.title, mission.goal_text(sim)], LiteGlyphs.OBJECTIVE)
-	ui.show_briefing(mission, c)
+	# New equipment arrives first (shown once a campaign), then the briefing.
+	var news: Array = LiteUnlock.items_at(c.ops) if c.revealed < c.ops else []
+	c.revealed = maxi(c.revealed, c.ops)
+	if sim.nuke_ready[0]:
+		news = news + [["THE BOMB", "Every region but their capital is ours. One missile, one city. Press N, pick the target. It cannot be undone.", "weapon", 3]]
+	ui.show_briefing(mission, c, true)
+	if news.is_empty() or _autoplay:
+		ui.briefing_ready()
+	else:
+		var m0: LiteMission = mission
+		LiteUnlock.play(self, news, func() -> void:
+			if mission == m0:
+				ui.briefing_ready())
 
 ## Closes the briefing and starts the operation's clock.
 func launch_mission() -> void:
 	ui.close_briefing()
 	paused = false
 	audio.click()
+	_said = {}
+	_targets_down = 0
+	_targets_found = 0
+	if mission != null:
+		for t: LiteBuilding in mission.targets:
+			_targets_found += 1 if t.seen[0] else 0
 	if not _autoplay:
 		ui.tips_war()
+	# The operation's orders, over the radio.
+	if campaign != null and mission != null:
+		var q: Array = LiteStory.briefing_quote(mission, map, campaign.ops)
+		_say(q[0], q[1], "orders", 0.0)
+		if mission.kind == LiteMission.CAPITAL:
+			_say("rudin", "So you came all the way to %s. Good. Every battery I have is waiting." % map.capital_name[1].trim_prefix("HQ "), "taunt", 0.0)
+
+## When each kind of radio line was last said, so they don't repeat too often.
+var _said: Dictionary = {}
+var _targets_down: int = 0
+var _targets_found: int = 0
+
+## One of the cast says `line`, unless a line of this `kind` was said in the
+## last `gap` seconds of game time.
+func _say(key: String, line: String, kind: String, gap: float) -> void:
+	# The cast speaks only in the story between operations now (the radio
+	# during play was more in the way than a help).
+	if not RADIO:
+		return
+	if cmd_ui == null or _autoplay or sim == null:
+		return
+	if _said.has(kind) and sim.time - float(_said[kind]) < gap:
+		return
+	_said[kind] = sim.time
+	cmd_ui.say(key, line)
 
 ## The operation's events, as their times come.
 func _operation_events() -> void:
@@ -411,9 +687,41 @@ func _operation_events() -> void:
 		var e: int = m.events[0][1]
 		m.events.remove_at(0)
 		LiteCampaign.happen(m, e, sim)
+		var said: Array = LiteStory.event_line(e)
+		_say(said[0], said[1], "event", 0.0)
 		ui.post(LiteMission.event_text(e), LiteGlyphs.YELLOW)
 		ui.hud.message(LiteMission.event_text(e))
 		audio.click()
+	# The plot's lines (forces on the move, see LiteMission.lines).
+	while not m.lines.is_empty():
+		var l: Array = m.lines.pop_front()
+		_say(l[0], l[1], "plot", 0.0)
+	# A train's wagons burnt: each pays.
+	var burnt: int = 0
+	for w: LiteBuilding in m.extras:
+		if not w.alive:
+			burnt += 1
+	while _wagons_paid < burnt:
+		_wagons_paid += 1
+		sim.sides[0].money += 60
+		ui.post("Ammunition wagon burnt: +$60.", LiteGlyphs.GOOD)
+	# Targets found and destroyed, reported over the radio.
+	var down: int = m.destroyed()
+	if down > _targets_down:
+		_targets_down = down
+		var left: int = m.targets.size() - down
+		if left > 0:
+			var said: Array[String] = ["Target down. %d to go.", "Good hit. %d left.", "That's one. %d more."]
+			match m.plot:
+				LiteMission.PLOT_COLUMN: said = ["Battalion burning on the road! %d still moving.", "Got one! %d left on the roads.", "That column's finished. %d to go."]
+				LiteMission.PLOT_HUNT: said = ["Launcher destroyed. %d still out there.", "Good hit, it won't fire again. %d left.", "One less launcher. %d to go."]
+			_say("varga" if m.plot != LiteMission.PLOT_COLUMN else "bilyk", said[down % 3] % left, "target", 0.0)
+	var found: int = 0
+	for t: LiteBuilding in m.targets:
+		found += 1 if t.seen[0] else 0
+	if found > _targets_found:
+		_targets_found = found
+		_say("moroz", "Found it! It's marked on your map now. Hit it before they move it.", "found", 0.0)
 	# A convoy: destroyed in time pays; missed, it is gone.
 	if m.convoy != null:
 		if not m.convoy.alive:
@@ -437,8 +745,23 @@ func withdraw_operation() -> void:
 ## at once (taken, or lost), then the debrief.
 func end_mission() -> void:
 	var m: LiteMission = mission
+	if m.result == 0:
+		LiteAchievements.note("ops_won")
+		if m.plot == LiteMission.PLOT_COLUMN:
+			LiteAchievements.note("columns")
+		if m.plot == LiteMission.PLOT_TRAIN:
+			var all_burnt: bool = true
+			for w: LiteBuilding in m.extras:
+				all_burnt = all_burnt and not w.alive
+			if all_burnt:
+				LiteAchievements.note("derailed")
+		if m.plot == LiteMission.PLOT_EVAC and m.destroyed() == 0:
+			LiteAchievements.note("left_behind")
+	elif campaign != null:
+		campaign.losses += 1
+	LiteAchievements.flush()
 	var to: int = -1
-	if m.result == 0 and m.kind != LiteMission.HOLD:
+	if m.result == 0 and (m.kind == LiteMission.STRIKE or m.kind == LiteMission.CAPITAL):
 		to = 0
 	elif m.result == 1 and m.kind == LiteMission.HOLD:
 		to = 1
@@ -462,26 +785,110 @@ func show_debrief() -> void:
 	paused = true
 	var c: LiteCampaign = campaign
 	var m: LiteMission = mission
-	var lines: PackedStringArray = PackedStringArray([m.outcome])
-	if m.optional != LiteMission.NONE:
-		lines.append(("Optional goal met: %s." if m.optional_done else "Optional goal missed: %s.") % m.optional_text().to_lower())
+	var lines: PackedStringArray = PackedStringArray([m.outcome, ""])
+	# What it changes, as the story tells it.
+	if m.result == 0 and m.kind == LiteMission.STRIKE:
+		lines.append(LiteStory.taken(m, c, war_map))
+	elif m.result == 1 and m.kind == LiteMission.HOLD:
+		lines.append(LiteStory.lost(m, war_map))
+	elif m.kind == LiteMission.HOLD or (m.kind == LiteMission.STRIKE and m.result == 1):
+		lines.append(LiteStory.held(m))
+	for line: String in c.consequences:
+		lines.append(line)
+	lines.append("")
+	for i: int in m.bonus.size():
+		var met: bool = i < m.bonus_done.size() and m.bonus_done[i]
+		lines.append(("Optional goal met: %s." if met else "Optional goal missed: %s.") % LiteMission.bonus_name(m.bonus[i]).to_lower())
+	lines.append("National morale: %s (%d)." % [LiteMorale.state_name(c.morale), roundi(c.morale)])
 	lines.append("Provinces taken: %d · lost: %d" % [c.taken[0], c.taken[1]])
+	var earned: int = (1 if m.result == 0 else 0) + (1 if m.bonus_done.has(true) else 0) + m.ships_sunk()
+	if earned > 0:
+		lines.append("Command points: +%d (spend them in the war council on the front)." % earned)
+	if not c.fallen.is_empty():
+		lines.append("")
+		lines.append(LiteStory.fell(c.group_name(war_map, c.group_at(c.fallen[0]))))
 	if c.counter >= 0:
 		lines.append("")
-		lines.append("The enemy strikes back at %s: it has to be held next." % c.group_name(war_map, c.counter))
+		lines.append(LiteStory.counter(c.group_name(war_map, c.counter)))
 	if c.finished:
 		LiteCampaign.forget()
-		var won: bool = c.won == 0
-		lines.append("")
-		var how: String = "won: the enemy asks for a ceasefire" if won else ("over: out of time, a ceasefire" if c.won == 2 else "lost")
-		lines.append("The war is %s." % how)
-		ui.show_debrief(m, "Victory" if won else ("Ceasefire" if c.won == 2 else "Defeat"), "\n".join(lines), true, won)
+		_campaign_end(c)
 		return
 	c.save()
-	ui.show_debrief(m, "Operation complete" if m.result == 0 else "Operation failed", "\n".join(lines), false, m.result == 0)
+	# The results page: a few short lines only (what changed, morale, points,
+	# what is coming), no story paragraphs.
+	var detail: PackedStringArray = PackedStringArray()
+	for line: String in c.consequences:
+		detail.append(line)
+	detail.append("Morale: %s" % LiteMorale.state_name(c.morale))
+	if earned > 0:
+		detail.append("+%d command point%s" % [earned, "" if earned == 1 else "s"])
+	if not c.fallen.is_empty():
+		detail.append("%s fell" % c.group_name(war_map, c.group_at(c.fallen[0])))
+	if c.counter >= 0:
+		detail.append("Offensive massing: %s" % c.group_name(war_map, c.counter))
+	ui.show_result(m, c, "Operation complete" if m.result == 0 else "Operation failed", m.result == 0, detail, false)
+
+## The campaign over: its front as the war left it, the winner taking the
+## rest (a ceasefire leaves the line where it is), then the end screen.
+func _campaign_end(c: LiteCampaign) -> void:
+	front_open = false
+	front_options = []
+	front_pick = -1
+	mission = null
+	started = false
+	paused = true
+	war_map = LiteMap.for_seed(c.map_seed)
+	c.make_groups(war_map)
+	c.apply_map(war_map)
+	front_labels = c.label_groups(war_map)
+	show_map(war_map, c.map_seed)
+	var keep: Array[LiteBuilding] = []
+	for b: LiteBuilding in sim.buildings:
+		if b.kind == LiteKind.CAPITAL:
+			keep.append(b)
+	sim.buildings = keep
+	_view.set_groups(c.group_of)
+	clock_offset = c.clock
+	var m0: LiteMap = map
+	await _wait(0.8)
+	if map != m0:
+		return
+	var title: String = "Victory" if c.won == 0 else ("Ceasefire" if c.won == 2 else "Defeat")
+	if c.won == 0:
+		LiteAchievements.note("campaigns_won")
+		if c.losses == 0:
+			LiteAchievements.note("flawless")
+	if c.won == 2:
+		_announce("CEASEFIRE", "The guns fall silent along the front", true, 3.0)
+		await _wait(3.0)
+	else:
+		_announce("VICTORY" if c.won == 0 else "DEFEAT",
+			("%s gives up: the enemy asks for a ceasefire" % map.capital_name[1]) if c.won == 0 else ("Our country's will broke: the war is lost"), c.won == 0, 3.6)
+		await _conquest(0 if c.won == 0 else 1)
+		await _wait(1.6)
+	if map != m0:
+		return
+	var won_ops: int = 0
+	for r: int in c.results:
+		if r == 0:
+			won_ops += 1
+	var stats: String = "The war lasted %s, %d operations.\n\n" % [LiteHud.duration(c.clock), c.ops]
+	stats += "Operations won: %d of %d\n" % [won_ops, c.ops]
+	stats += "Regions taken: %d · lost: %d\n" % [c.taken[0], c.taken[1]]
+	for h: String in c.history:
+		stats += "\n" + h
+	_announce_clear()
+	if _autoplay:
+		ui.show_end(c.won == 0, stats, title)
+		return
+	var won: int = c.won
+	var war: LiteMap = map
+	ui.slides.play([LiteStory.end_slide(c.won, map)], func() -> void: ui.campaign_end.show_end(c, won, war))
 
 func next_mission() -> void:
 	ui.close_debrief()
+	ui.close_page()
 	show_front()
 
 func set_speed(s: float) -> void:
@@ -493,7 +900,29 @@ func set_speed(s: float) -> void:
 	paused = false
 	speed = s
 
+## The repair tool (in build_tool's place): a click on one of our damaged
+## sites repairs it; on a region with a ruined factory, rebuilds it.
+const REPAIR_TOOL: int = -10
+
+## Switches a factory of ours to its next production line (LiteStock).
+func cycle_line(b: LiteBuilding) -> void:
+	if b == null or not b.alive or b.side != 0 or b.kind != LiteKind.FACTORY:
+		return
+	for k: int in range(1, LiteStock.LINES + 1):
+		var l: int = (b.line + k) % LiteStock.LINES
+		if l == LiteStock.AMMO or sim.has_arm(0, l):
+			b.line = l
+			break
+	ui.hud.message("Factory now makes: %s" % LiteStock.LINE_NAMES[b.line].to_lower())
+	audio.click()
+
 func select_build(k: int) -> void:
+	# The toolbar's AA gun slot: whichever kind of gun the side has now.
+	if not LiteSim.classic_rules and (k == LiteKind.GUN or k == LiteKind.MOBILE):
+		k = sim.gun_kind[0]
+	if not sim.may_build(0, k):
+		refuse("%s: not available yet in this campaign" % LiteGlyphs.names(k).capitalize())
+		return
 	if build_tool != null and build_tool == k:
 		build_tool = null
 	else:
@@ -502,6 +931,10 @@ func select_build(k: int) -> void:
 	audio.click()
 
 func select_strike(a: int) -> void:
+	# A campaign's first operations have only some weapons (LiteCampaign.arms_at).
+	if not sim.has_arm(0, a):
+		refuse("%s not available yet in this campaign" % LiteGlyphs.plural(a, 2).capitalize())
+		return
 	if strike_tool != null and strike_tool == a:
 		strike_tool = null
 	else:
@@ -530,6 +963,11 @@ func day_of_month(t: float) -> int:
 	return int(clock_text(t, true).split(" ")[0])
 
 func _process(delta: float) -> void:
+	var t_perf: float = LitePerf.now
+	_process_timed(delta)
+	LitePerf.add("main process", t_perf)
+
+func _process_timed(delta: float) -> void:
 	if ui == null:
 		return
 	if _fake_mouse != null:
@@ -549,16 +987,22 @@ func _process(delta: float) -> void:
 	if started and not paused and not ui.menu_open:
 		var t0: float = LitePerf.now
 		var dt: float = delta * speed
+		sim.env.clock_offset = clock_offset
 		while dt > 0.0001:
-			var h: float = minf(dt, 1 / 30.0)
+			# Steps of up to a twentieth of a second (a thirtieth cost a third
+			# more at 2x and 3x speed; nothing in the war moves far in either).
+			var h: float = minf(dt, 1 / 20.0)
 			sim.step(h)
 			dt -= h
 		LitePerf.sim_ms += LitePerf.now - t0
 	# The home screen's picture covers the map: no need to draw the map under it.
 	_view.visible = not ui.home_open
 	handle_events()
+	if _event_pending:
+		_show_pending_event()
 	if mission != null and started and mission.result < 0:
 		_operation_events()
+		mission.tick_time(sim.time)
 		mission.update(sim)
 		if mission.result >= 0:
 			end_mission()
@@ -594,24 +1038,35 @@ func engine_sounds(delta: float) -> void:
 	audio.loop("cruise_loop.wav", (0.4 + 0.6 * minf(1.0, cruise / 5.0)) if cruise > 0 else 0.0, -17.0, delta)
 	# The siren wails for as long as any of our regions is under alert.
 	audio.loop("alert_loop.wav", 1.0 if live and _our_alert() else 0.0, -10.0, delta, 0.6, "", true)
-	# Guns sound while they fire and stop with them: a gun shoots every GUN_INTERVAL.
+	# Guns sound while they fire and stop with them: the armoured guns' rotary
+	# cannon (the old guns' bursts in classic rules), the pickups' machine guns.
 	for side: int in 2:
 		var since: float = sim.time - gun_shot_at[side]
-		var firing: bool = live and since >= 0.0 and since < LiteRules.GUN_INTERVAL + 0.15
-		audio.loop("gun_loop.wav", 1.0 if firing else 0.0, -18.0 if side == 0 else -27.0, delta, 14.0, "gun_%d" % side)
+		if LiteSim.classic_rules:
+			var firing: bool = live and since >= 0.0 and since < LiteRules.GUN_INTERVAL + 0.15
+			audio.loop("gun_loop.wav", 1.0 if firing else 0.0, -18.0 if side == 0 else -27.0, delta, 14.0, "gun_%d" % side)
+		else:
+			var hosing: bool = live and since >= 0.0 and since < LiteRules.MINIGUN_INTERVAL + 0.12
+			audio.loop("minigun_loop.wav", 1.0 if hosing else 0.0, -16.0 if side == 0 else -26.0, delta, 16.0, "minigun_%d" % side)
+			var since2: float = sim.time - mg_shot_at[side]
+			var firing2: bool = live and since2 >= 0.0 and since2 < LiteRules.MOBILE_INTERVAL + 0.15
+			audio.loop("gun_loop.wav", 1.0 if firing2 else 0.0, -19.0 if side == 0 else -28.0, delta, 14.0, "mg_%d" % side)
 
 func update_hover() -> void:
 	hover_building = null
 	hover_region = -1
 	strike_snap = null
 	strike_target = mouse
+	# At a gun: the map under the crosshair is not for picking.
+	if gunner != null:
+		return
 	if front_open and not ui.menu_open and (_fake_mouse != null or get_viewport().gui_get_hovered_control() == null):
 		var fid: int = map.region_at(mouse)
 		hover_region = -1 if fid == LiteMap.NONE else fid
 		return
 	if not started or ui.menu_open or (_fake_mouse == null and get_viewport().gui_get_hovered_control() != null):
 		return
-	var best: float = 11
+	var best: float = 16
 	for b: LiteBuilding in sim.buildings:
 		if not b.alive or not (b.side == 0 or b.seen[0]):
 			continue
@@ -626,20 +1081,28 @@ func update_hover() -> void:
 		strike_target = hover_building.pos
 
 func _unhandled_input(e: InputEvent) -> void:
+	if ui != null and ui.slides != null and ui.slides.visible:
+		return
 
 	var key: InputEventKey = e as InputEventKey
 	if key != null and key.pressed and not key.echo and key.keycode == KEY_ESCAPE:
 		if ui.menu_open:
 			ui.back()
-		elif build_tool != null or strike_tool != null:
+		elif build_tool != null or strike_tool != null or nuke_tool:
 			build_tool = null
 			strike_tool = null
+			nuke_tool = false
 		elif (started and sim.winner < 0) or front_open:
 			ui.show_menu()
 		get_viewport().set_input_as_handled()
 		return
 	if key != null and key.pressed and not key.echo and (key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER) and (ui.home_open or ui.briefing_open):
 		ui.enter()
+		get_viewport().set_input_as_handled()
+		return
+	# Map theme hook: F8 switches between the legacy and the command look.
+	if key != null and key.pressed and not key.echo and key.keycode == KEY_F8:
+		LiteTheme.set_command(self, not LiteTheme.command)
 		get_viewport().set_input_as_handled()
 		return
 	if key != null and key.pressed and not key.echo and key.keycode == KEY_F11:
@@ -668,21 +1131,35 @@ func _unhandled_input(e: InputEvent) -> void:
 				else:
 					paused = true
 			KEY_1: select_build(LiteKind.FACTORY)
-			KEY_2: select_build(LiteKind.GUN)
-			KEY_3: select_build(LiteKind.SAM)
+			KEY_2: select_build(LiteKind.REFINERY if not LiteSim.classic_rules else LiteKind.GUN)
+			KEY_3: select_build(LiteKind.GUN if not LiteSim.classic_rules else LiteKind.SAM)
+			KEY_4: select_build(LiteKind.SAM)
+			KEY_5: select_build(LiteKind.RADAR if not LiteSim.classic_rules else LiteKind.MOBILE)
+			KEY_6: select_build(LiteKind.RADAR)
 			KEY_Q: select_strike(LiteArm.DRONE)
 			KEY_W: select_strike(LiteArm.CRUISE)
 			KEY_E: select_strike(LiteArm.BALLISTIC)
 			KEY_T: ui.show_stats()
+			KEY_N: select_nuke()
+			KEY_G:
+				var gpick: LiteBuilding = hover_building
+				if gpick == null and cmd_ui != null:
+					gpick = cmd_ui.pinned
+				take_gun(gpick)
 			_: return
 		get_viewport().set_input_as_handled()
 	elif mb != null and mb.pressed:
 		if mb.button_index == MOUSE_BUTTON_RIGHT:
 			build_tool = null
 			strike_tool = null
+			nuke_tool = false
 			drawing = null
+		elif mb.button_index == MOUSE_BUTTON_LEFT and nuke_tool:
+			fire_nuke()
 		elif mb.button_index == MOUSE_BUTTON_LEFT:
-			if build_tool != null:
+			if mb.double_click and build_tool == null and strike_tool == null and LiteGunner.can_take(hover_building):
+				take_gun(hover_building)
+			elif build_tool != null:
 				try_build()
 
 			elif strike_tool != null:
@@ -698,6 +1175,9 @@ func _unhandled_input(e: InputEvent) -> void:
 ## click each; right-click, Esc or its button again puts it down.
 func try_build() -> void:
 	var k: int = build_tool
+	if k == REPAIR_TOOL:
+		try_repair()
+		return
 	if sim.sides[0].money < sim.cost(0, k):
 		refuse("Not enough money: %s costs $%d" % [LiteGlyphs.name(k), sim.cost(0, k)])
 		return
@@ -719,10 +1199,46 @@ func try_build() -> void:
 		audio.play("click.wav", -6.0)
 		return
 	if not sim.can_place(0, mouse):
-		refuse("Build on your own territory, a little away from other sites")
+		if map.side_at(mouse) == 0 and map.in_town(mouse, 4.0):
+			refuse("Not in a town: build in the open country")
+		else:
+			refuse("Build on your own territory, a little away from other sites")
+		return
+	if sim.sides[0].money < sim.cost_at(0, k, mouse):
+		refuse("Not enough money: on wet ground it costs $%d" % sim.cost_at(0, k, mouse))
 		return
 	sim.build(0, k, mouse)
 	audio.play("click.wav", -6.0)
+
+## The repair tool's click: our damaged site under the pointer repaired, or
+## a ruined factory in our region under it rebuilt.
+func try_repair() -> void:
+	var b: LiteBuilding = hover_building
+	if b != null and b.side == 0:
+		if not b.ready:
+			refuse("Still being built")
+		elif b.repairing > 0.0:
+			refuse("Already being repaired")
+		elif b.hp >= b.max_hp:
+			refuse("%s is not damaged" % LiteGlyphs.name(b.kind))
+		elif b.kind == LiteKind.CAPITAL:
+			refuse("The capital repairs itself with its factories' help")
+		elif not LiteStock.repair(sim, b):
+			refuse("Not enough money: repair costs $%d" % LiteStock.repair_cost(b))
+		else:
+			audio.play("click.wav", -6.0)
+		return
+	var r: int = hover_region
+	if r >= 0 and map.regions[r].city:
+		r = map.regions[r].parent
+	if r >= 0 and map.regions[r].side == 0 and sim.ruins_in(r) > 0:
+		var c: int = sim.rebuild_cost(0)
+		if sim.rebuild_factory(0, r) == null:
+			refuse("Not enough money or ground: rebuilding costs $%d" % c)
+		else:
+			audio.play("click.wav", -6.0)
+		return
+	refuse("Click one of our damaged sites, or a region with a ruined factory")
 
 func finish_route() -> void:
 	var pts: Array[Vector2] = drawing
@@ -736,28 +1252,154 @@ func finish_route() -> void:
 	for i: int in range(pts.size() - 1, -1, -1):
 		if pts[i].distance_to(strike_target) < 14:
 			pts.remove_at(i)
+	pts = _smooth_route(pts)
 	if pts.size() > 0:
 		try_strike(pts)
 	else:
 		try_strike(null)
 
+## A route drawn by hand, made a smooth curve: points every 30 units along
+## it, then each eased towards its neighbours (twice), its ends kept; the
+## weapons fly a spline through these (see LiteSim.build_path).
+static func _smooth_route(pts: Array[Vector2]) -> Array[Vector2]:
+	if pts.size() < 3:
+		return pts
+	var even: Array[Vector2] = [pts[0]]
+	var acc: float = 0.0
+	for i: int in range(1, pts.size()):
+		acc += pts[i].distance_to(pts[i - 1])
+		if acc >= 30.0:
+			even.append(pts[i])
+			acc = 0.0
+	if even[even.size() - 1] != pts[pts.size() - 1]:
+		even.append(pts[pts.size() - 1])
+	for pass_: int in 2:
+		var next: Array[Vector2] = [even[0]]
+		for i: int in range(1, even.size() - 1):
+			next.append(even[i] * 0.5 + (even[i - 1] + even[i + 1]) * 0.25)
+		next.append(even[even.size() - 1])
+		even = next
+	return even
+
 func try_strike(route: Variant) -> void:
 	var a: int = strike_tool
-	if map.side_at(strike_target) != 1:
+	if map.side_at(strike_target) != 1 and not _enemy_afloat(strike_target):
 		refuse("Pick a target on enemy territory")
 		return
 	var n: int = salvo
-	if sim.sides[0].money < LiteRules.cost(a):
-		refuse("Not enough money: a %s costs $%d" % [LiteGlyphs.name_arm(a).to_lower(), LiteRules.cost(a)])
+	if sim.in_stock(0, a) <= 0:
+		refuse("No %s in stock: factories on that line make more" % LiteGlyphs.plural(a, 2))
 		return
-	while n > 1 and sim.sides[0].money < LiteRules.cost(a) * n:
+	n = mini(n, sim.in_stock(0, a))
+	if sim.sides[0].money < sim.arm_cost(0, a):
+		refuse("Not enough money: a %s costs $%d" % [LiteGlyphs.name_arm(a).to_lower(), sim.arm_cost(0, a)])
+		return
+	while n > 1 and sim.sides[0].money < sim.arm_cost(0, a) * n:
 		n -= 1
 	if route != null:
 		var pts: Array[Vector2] = route
 		sim.strike(0, a, strike_target, n, null, 0.0, pts)
 	else:
 		sim.strike(0, a, strike_target, n)
+	if n >= 10:
+		LiteAchievements.note("salvo10")
 	audio.play("click.wav", -6.0)
+
+## Whether an enemy unit we can see is near `p` off their land (a tanker
+## at sea): a strike may go for it.
+func _enemy_afloat(p: Vector2) -> bool:
+	for b: LiteBuilding in sim.buildings:
+		if b.alive and b.side == 1 and b.kind == LiteKind.UNIT and b.seen[0] and b.pos.distance_to(p) < 14.0:
+			return true
+	return false
+
+## The player takes one of our guns (an armoured AA gun or a gun truck,
+## not a SAM site) and fires it by hand (see LiteGunner).
+func take_gun(b: LiteBuilding) -> void:
+	if LiteSim.classic_rules:
+		return
+	if not LiteGunner.can_take(b):
+		refuse("Double-click one of our AA guns or gun trucks (not a SAM site) to take it")
+		return
+	if gunner != null:
+		gunner.leave()
+	gunner = LiteGunner.new()
+	add_child(gunner)
+	gunner.start(self, b)
+
+## What counts towards the achievements (LiteAchievements), from a war's events.
+var _our_capital_hit: bool = false
+var _count_at: float = 0.0
+## This war's tallies for the harder achievements: hits on their capital by
+## ballistic missiles and by anything else, whether we launched anything but
+## drones or built a SAM, their refineries and radars destroyed.
+var _cap_ballistic: int = 0
+var _cap_other: bool = false
+var _launched_other: bool = false
+var _built_sam: bool = false
+var _refineries: int = 0
+var _radars: int = 0
+
+func _count(e: LiteEvent) -> void:
+	match e.type:
+		LiteEv.SHOT_DOWN:
+			if e.side == 0:
+				LiteAchievements.note("downed")
+		LiteEv.HIT:
+			if e.side == 0:
+				LiteAchievements.note("hits")
+		LiteEv.CAPITAL_HIT:
+			if e.side == 0:
+				_our_capital_hit = true
+			elif e.arm == LiteArm.BALLISTIC:
+				_cap_ballistic += 1
+			else:
+				_cap_other = true
+		LiteEv.LAUNCH:
+			if e.side == 0 and e.arm != LiteArm.DRONE:
+				_launched_other = true
+		LiteEv.BUILT:
+			if e.side == 0 and e.kind == LiteKind.SAM:
+				_built_sam = true
+		LiteEv.DESTROYED:
+			if e.side == 1:
+				if e.kind == LiteKind.REFINERY:
+					_refineries += 1
+					if _refineries == 5:
+						LiteAchievements.note("black_gold")
+				elif LiteKind.is_radar(e.kind):
+					_radars += 1
+					if _radars == 3:
+						LiteAchievements.note("blind")
+	# How many factories run at once, now and then.
+	if sim.time - _count_at > 3.0:
+		_count_at = sim.time
+		var n: int = 0
+		for b: LiteBuilding in sim.buildings:
+			if b.alive and b.side == 0 and b.kind == LiteKind.FACTORY:
+				n += 1
+		LiteAchievements.best("factories_peak", n)
+
+## The bomb picked up (N), if this side may use it.
+func select_nuke() -> void:
+	if not sim.nuke_ready[0]:
+		return
+	nuke_tool = not nuke_tool
+	build_tool = null
+	strike_tool = null
+	audio.click()
+
+## The bomb launched at the pointer.
+func fire_nuke() -> void:
+	if map.side_at(mouse) != 1:
+		refuse("Pick a target on enemy territory")
+		return
+	nuke_tool = false
+	sim.nuke(0, mouse)
+	LiteAchievements.note("nuke")
+	ui.post("Nuclear launch.", LiteGlyphs.ENEMY)
+	_say("varga", "Launch confirmed. God help us all.", "nuke", 0.0)
+	audio.play("ballistic_warning.wav", -6.0, 1.0, 0.0)
 
 func refuse(why: String) -> void:
 	ui.hud.message(why)
@@ -788,6 +1430,8 @@ func handle_events() -> void:
 	for e: LiteEvent in sim.events:
 		if mission != null:
 			mission.on_event(e, map)
+		if started:
+			_count(e)
 		match e.type:
 			LiteEv.ALL_CLEAR:
 				if e.side == 0:
@@ -797,15 +1441,26 @@ func handle_events() -> void:
 				if e.side == 0:
 					audio.play("launch.wav", -19.0, 0.15)
 					continue
+				# A big wave on its way.
+				if e.raid != null and e.raid.total >= 8 and not e.raid.reported and e.arm == LiteArm.DRONE:
+					e.raid.reported = true
+					_say("bilyk", "Big wave inbound: %d drones. Crews, wake up!" % e.raid.total, "wave", 60.0)
 				if e.arm == LiteArm.BALLISTIC:
 					# One line per salvo, not per missile.
 					if e.raid == null or not e.raid.reported:
 						if e.raid != null:
 							e.raid.reported = true
 						ui.post("Ballistic launch towards %s." % region_name(e.region), LiteGlyphs.BALLISTIC_ALERT)
+						_say("bilyk", "Ballistic launch! Everyone to the shelters, SAMs get ready!", "ballistic", 60.0)
 					audio.play("ballistic_warning.wav", -9.0, 4.0, 0.0)
+			LiteEv.NUKE:
+				audio.play("explosion_b.wav", 0.0, 0.0, 0.0)
+				audio.play("explosion_a.wav", -2.0, 0.0, 0.0)
+				_announce("NUCLEAR STRIKE", "%s will not forget this day" % map.capital_name[1], true, 4.0)
 			LiteEv.SHOT_DOWN:
 				audio.play("intercept.wav", -15.0 if e.side == 0 else -22.0, 0.08)
+				if e.side == 0 and e.arm == LiteArm.BALLISTIC:
+					_say("bilyk", ["Got the ballistic! Clean intercept!", "Ballistic down! Drinks are on me, lads.", "That one won't land anywhere."][randi() % 3], "bal_down", 30.0)
 			LiteEv.HIT:
 				var on_us: bool = e.side == 1
 				audio.play("explosion_small_a.wav" if e.arm == LiteArm.DRONE else "explosion_a.wav", -11.0 if on_us else -19.0, 0.06)
@@ -814,20 +1469,41 @@ func handle_events() -> void:
 					continue
 				_last_capital_post = sim.time
 				if e.side == 0:
-					ui.post("%s hit · %d/%d" % [map.capital_name[0], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.ENEMY)
+					ui.post(("%s hit" % map.capital_name[0]) if not LiteSim.classic_rules else ("%s hit · %d/%d" % [map.capital_name[0], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))]), LiteGlyphs.ENEMY)
+					_say("varga", "They hit the command. Get more SAMs up round it!", "our_cap", 90.0)
 				else:
-					ui.post("Hit on %s · %d/%d" % [map.capital_name[1], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))], LiteGlyphs.OURS)
+					_say("rudin", ["All batteries: protect the command!", "Who let that through? Find them!", "Hold. We hold. Whatever it costs."][randi() % 3], "their_cap", 90.0)
+					ui.post(("Hit on %s" % map.capital_name[1]) if not LiteSim.classic_rules else ("Hit on %s · %d/%d" % [map.capital_name[1], roundi(e.value), roundi(LiteRules.max_hp(LiteKind.CAPITAL))]), LiteGlyphs.OURS)
 			LiteEv.DESTROYED:
 				if e.kind == LiteKind.CAPITAL:
 					continue
-				if e.side == 0:
+				if e.kind == LiteKind.POWER:
+					ui.post("Power station down in %s: %s SAMs silent for a day." % [region_name(e.region), "our" if e.side == 0 else "enemy"],
+						LiteGlyphs.ENEMY if e.side == 0 else LiteGlyphs.YELLOW)
+				elif e.side == 0:
 					ui.post("Lost: our %s in %s" % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.ENEMY)
+					if e.kind == LiteKind.FACTORY:
+						_say("bilyk", "We lost a factory in %s. Cover the others!" % region_name(e.region), "factory", 45.0)
 				else:
 					ui.post("Destroyed: enemy %s in %s" % [LiteGlyphs.name(e.kind), region_name(e.region)], LiteGlyphs.GOOD)
 				audio.play("wreck.wav", -13.0, 0.2)
 			LiteEv.BUILT:
 				if e.side == 0:
 					audio.play("click_off.wav", -12.0)
+			LiteEv.LINK_LOST:
+				if e.side == 0:
+					var n: int = int(e.value)
+					ui.post("Radar lost in %s: %s" % [region_name(e.region),
+						("%d air defence site%s fight%s without its picture" % [n, "" if n == 1 else "s", "s" if n == 1 else ""]) if n > 0 else "no site left blind"], LiteGlyphs.ENEMY)
+					_say("varga", "We lost a radar. The batteries round it are firing blind: cover that gap!", "radar", 60.0)
+				else:
+					ui.post("Enemy radar destroyed in %s: their air defence there is half blind" % region_name(e.region), LiteGlyphs.GOOD)
+			LiteEv.REPAIRED:
+				if e.side == 0:
+					ui.post("Repaired: our %s in %s" % [LiteGlyphs.name(e.kind).to_lower(), region_name(e.region)], LiteGlyphs.OURS)
+			LiteEv.MORALE:
+				ui.post("Our people will not go on: the government asks for terms." if e.side == 0 else "The enemy's people have had enough: their government asks for terms.",
+					LiteGlyphs.ENEMY if e.side == 0 else LiteGlyphs.GOOD)
 			LiteEv.INDUSTRY:
 				if e.side != 0:
 					continue
@@ -860,23 +1536,75 @@ func handle_events() -> void:
 				# In a campaign operation a command falling ends the
 				# operation (see LiteMission.update), not the war.
 				if mission == null:
-					_end_timer = 2.0
+					_war_end()
 				build_tool = null
 				strike_tool = null
 				audio.play("explosion_b.wav", -5.0)
 	sim.events.clear()
 
+## A war won or lost: the fallen capital announced, the winner's troops
+## taking the loser's country on the map, then the war's statistics.
+func _war_end() -> void:
+	var m0: LiteMap = map
+	var winner: int = sim.winner
+	await _wait(1.4)
+	if map != m0:
+		return
+	_announce(("%s GIVES UP" if not LiteSim.classic_rules else "%s HAS FALLEN") % map.capital_name[1 - winner].to_upper(),
+		"Victory: our troops cross the frontier" if winner == 0 else "Defeat: the enemy overruns the country", winner == 0, 3.6)
+	await _conquest(winner)
+	await _wait(1.6)
+	if map == m0 and started:
+		_announce_clear()
+		show_end()
+
 func show_end() -> void:
 	var me: LiteSide = sim.sides[0]
+	var them: LiteSide = sim.sides[1]
 	var won: bool = sim.winner == 0
-	var stats: String = ("%s has fallen after %s of war.\n\n" % [map.capital_name[1 if won else 0], LiteHud.duration(sim.time + clock_offset)]) + ("Enemy weapons shot down: %d\n" % me.downed) + ("Our hits on enemy sites: %d\n" % me.hits) + ("Enemy sites destroyed: %d\n" % me.destroyed) + ("Our sites lost: %d" % me.lost)
+	if won and campaign == null:
+		LiteAchievements.note("wars_won")
+		if LiteSettings.difficulty >= 2:
+			LiteAchievements.note("wars_hard")
+		if not _our_capital_hit:
+			LiteAchievements.note("untouched")
+		if _cap_ballistic >= 10 and not _cap_other:
+			LiteAchievements.note("ballistic_exec")
+		if not _launched_other:
+			LiteAchievements.note("swarm")
+		if not _built_sam:
+			LiteAchievements.note("no_sam")
+		if sim.time < LiteRules.DAY * 10.0:
+			LiteAchievements.note("lightning")
+	LiteAchievements.flush()
+	# Casualty figures are the game's own estimates, from the hits each side
+	# took (the war counts sites and weapons, not people).
+	var rng:= RandomNumberGenerator.new()
+	rng.seed = seed * 31 + int(sim.time)
+	var ours_hurt: int = them.hits * rng.randi_range(18, 26) + me.lost * rng.randi_range(30, 45)
+	var theirs_hurt: int = me.hits * rng.randi_range(20, 30) + me.destroyed * rng.randi_range(35, 55)
+	var stats: String = ("%s has fallen after %s of war.\n\n" % [map.capital_name[1 if won else 0], LiteHud.duration(sim.time + clock_offset)])
+	if not LiteSim.classic_rules:
+		stats = ("%s's will broke after %s of war: %s.\n\n" % [("The enemy" if won else "Our country"), LiteHud.duration(sim.time + clock_offset),
+			"it asks for terms" if won else "the government asks for terms"])
+	stats += "Weapons launched: ours %d · the enemy's %d\n" % [me.launched, them.launched]
+	stats += "Shot down: by us %d · by the enemy %d\n" % [me.downed, them.downed]
+	stats += "Hits on sites: ours %d · the enemy's %d\n" % [me.hits, them.hits]
+	stats += "Sites destroyed: %d enemy · %d of ours\n" % [me.destroyed, me.lost]
+	stats += "Air alerts sounded: %d\n" % sim.stats.alerts
+	stats += "Estimated casualties: ours %d · the enemy's %d" % [ours_hurt, theirs_hurt]
 	if campaign != null:
 		# A capital falling ends the whole campaign, whichever mission it was.
-		stats = ("%s has fallen in operation %d. The campaign is %s.\n\nProvinces taken: %d · lost: %d" %
-			[map.capital_name[1 if won else 0], mission.number, "won" if won else "lost",
+		stats = ("%s gave up in operation %d. The campaign is %s.\n\nProvinces taken: %d · lost: %d" %
+			[("The enemy" if won else "Our country"), mission.number, "won" if won else "lost",
 			campaign.taken[0], campaign.taken[1]])
 		LiteCampaign.forget()
-	ui.show_end(won, stats)
+	if _autoplay:
+		ui.show_end(won, stats)
+		return
+	# First the picture of it, full screen (victory or defeat), then the
+	# figures.
+	ui.slides.play([LiteStory.end_slide(0 if won else 1, map)], func() -> void: ui.show_end(won, stats))
 
 func run_balance(seed_: int, seconds: int, seeds: int) -> void:
 	for k: int in seeds:
@@ -1055,8 +1783,21 @@ func run_campaign(dir: String) -> void:
 			LiteCampaign.counter_chance = 1.0
 		if a.begins_with("--lite-difficulty=") and a.substr(18).is_valid_int():
 			LiteSettings.difficulty = clampi(a.substr(18).to_int(), 0, 2)
+	var kinds: Array[int] = []
+	for a: String in OS.get_cmdline_user_args():
+		if a.begins_with("--lite-kinds="):
+			for t: String in a.substr(13).split(","):
+				kinds.append(int(t))
 	await _wait(0.5)
 	start_campaign(true, seed)
+	# `--lite-slides`: the opening slides, shot one by one.
+	if "--lite-slides" in OS.get_cmdline_user_args():
+		var intro: Array = LiteStory.intro(war_map)
+		for k: int in intro.size():
+			ui.slides.play([intro[k]])
+			await _wait(2.2)
+			await _shot(dir, "s%d_slide.png" % k)
+		ui.slides.visible = false
 	# `--lite-hold`: the enemy attacking one of ours from the start.
 	if "--lite-hold" in OS.get_cmdline_user_args():
 		campaign.counter = campaign.group_at(LiteCampaign._border(war_map, 0)[0])
@@ -1066,6 +1807,7 @@ func run_campaign(dir: String) -> void:
 		await _wait(0.6)
 		await _shot(dir, "c%d_a_front.png" % n)
 		var t0: int = Time.get_ticks_msec()
+		LiteCampaign.force_character = kinds[n] if n < kinds.size() else -1
 		await launch_operation()
 		if mission == null:
 			print("[campaign] no operation could start")
@@ -1079,7 +1821,7 @@ func run_campaign(dir: String) -> void:
 		# The planner that holds its own against Normal in the balance runs.
 		sim.ai[0].classic = true
 		sim.ai[0].waves = true
-		if m.kind == LiteMission.HOLD:
+		if m.defensive:
 			# What a player would do first: air defence over the province.
 			for id: int in map.focus:
 				var p: Variant = sim.find_spot(0, map.regions[id].label, 6, 30)
@@ -1088,7 +1830,7 @@ func run_campaign(dir: String) -> void:
 		else:
 			sim.ai[0].focus_set = map.focus
 			sim.ai[0].focus_weight = 5.0
-		if m.kind != LiteMission.HOLD:
+		if not m.defensive:
 			_salvos(m)
 		speed = 3
 		Engine.time_scale = 6
@@ -1108,7 +1850,7 @@ func run_campaign(dir: String) -> void:
 		if sim.winner >= 0:
 			print("[campaign] a command fell: winner %d" % sim.winner)
 			break
-		await _until(func() -> bool: return ui.debrief_open)
+		await _until(func() -> bool: return ui.debrief_open or ui.page_open)
 		await _wait(0.6)
 		await _shot(dir, "c%d_d_debrief.png" % n)
 		if campaign.finished:
@@ -1154,13 +1896,15 @@ func tips_shots(dir: String) -> void:
 	ui.tutorial.finish()
 	start_campaign(true, seed)
 	await _wait(0.6)
-	await _shot(dir, "t_front_0.png")
-	ui.tutorial.next()
-	await _wait(0.4)
-	await _shot(dir, "t_front_1.png")
+	for k: int in 6:
+		if not ui.tutorial.running:
+			break
+		await _shot(dir, "t_front_%d.png" % k)
+		ui.tutorial.next()
+		await _wait(0.4)
 	ui.tutorial.finish()
 	await _wait(0.3)
-	await _shot(dir, "t_front_2.png")
+	await _shot(dir, "t_front_end.png")
 	await launch_operation()
 	await _wait(0.6)
 	await _shot(dir, "t_briefing.png")
@@ -1234,6 +1978,9 @@ func stress(dir: String) -> void:
 	rng.seed = 5
 	for side: int in 2:
 		sim.sides[side].money += 100000
+		# Phase 4: only what is in the stockpile flies.
+		for l: int in 4:
+			sim.sides[side].stock[l] = 999.0
 		for i: int in 6:
 			sim.strike(side, LiteArm.DRONE, sim.random_spot(1 - side, rng), 14)
 			sim.strike(side, LiteArm.CRUISE, sim.random_spot(1 - side, rng), 4)
@@ -1241,6 +1988,20 @@ func stress(dir: String) -> void:
 	for i: int in 40:
 		await get_tree().process_frame
 	await measure("crowded sky", 3)
+	# At a gun, firing (the view closed in, rounds in the air).
+	if not LiteSim.classic_rules:
+		for b: LiteBuilding in sim.buildings:
+			if LiteGunner.can_take(b):
+				take_gun(b)
+				gunner.trigger = true
+				_fake_mouse = b.pos + Vector2(30, -20)
+				break
+		for i: int in 60:
+			await get_tree().process_frame
+		await measure("at the gun", 1)
+		if gunner != null:
+			gunner.leave()
+		_fake_mouse = null
 	if dir != "":
 		await _shot(dir, "5_stress.png")
 

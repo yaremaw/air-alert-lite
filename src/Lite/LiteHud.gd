@@ -203,5 +203,15 @@ static func duration(seconds: float) -> String:
 
 	var m: int = int(seconds * LiteRules.GAME_MINUTES / 10.0) * 10
 	if m >= 1440:
-		return "%d d %d h" % [m / 1440, (m % 1440) / 60]
+		var days: int = m / 1440
+		var hours: int = (m % 1440) / 60
+		if hours == 0:
+			return "%d day%s" % [days, "" if days == 1 else "s"]
+		return "%d d %d h" % [days, hours]
 	return ("%d h %02d min" % [m / 60, m % 60]) if m >= 60 else ("%d min" % m)
+
+## Hidden (itself or a parent), it does no work frame by frame: with dozens
+## of these in the menus and the HUD, their _process added up.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED or what == NOTIFICATION_READY:
+		set_process(is_visible_in_tree())

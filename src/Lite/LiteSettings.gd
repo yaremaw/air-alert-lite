@@ -7,11 +7,15 @@ const VOLUME_DB: Array[float] = [-80.0, -16.0, -8.0, 0.0]
 static var volume: int = 2
 static var difficulty: int = 1
 static var fullscreen: bool = false
-static var routes: bool = true
-static var ranges: bool = true
+static var routes: bool = false
+static var ranges: bool = false
 ## Whether the first-time tips have been shown, for a war and for the front.
 static var tips_war: bool = false
 static var tips_front: bool = false
+## Jet drones won in the campaign: a single war has them too since.
+static var jets: bool = false
+## Which version of the tips was seen (see load).
+const TIPS_VERSION: int = 2
 
 static func load() -> void:
 	var c:= ConfigFile.new()
@@ -21,10 +25,15 @@ static func load() -> void:
 	difficulty = clampi(int(c.get_value("lite", "difficulty", difficulty)), 0, 2)
 	# Every launch starts windowed; fullscreen is chosen in Settings or with F11.
 	fullscreen = false
-	routes = bool(c.get_value("lite", "routes", routes))
-	ranges = bool(c.get_value("lite", "ranges", ranges))
+	routes = bool(c.get_value("lite", "routes_shown", routes))
+	ranges = bool(c.get_value("lite", "coverage_layer", ranges))
 	tips_war = bool(c.get_value("lite", "tips_war", tips_war))
 	tips_front = bool(c.get_value("lite", "tips_front", tips_front))
+	jets = bool(c.get_value("lite", "jets", jets))
+	# The tips were rewritten: shown again once to everyone who saw the old ones.
+	if int(c.get_value("lite", "tips_version", 1)) < TIPS_VERSION:
+		tips_war = false
+		tips_front = false
 
 ## Until version 1.1 the project was called "Air Alert", and Godot keeps a
 ## desktop game's files in a folder named after the project: read the old one's
@@ -42,10 +51,12 @@ static func save() -> void:
 	c.set_value("lite", "volume", volume)
 	c.set_value("lite", "difficulty", difficulty)
 	c.set_value("lite", "fullscreen", fullscreen)
-	c.set_value("lite", "routes", routes)
-	c.set_value("lite", "ranges", ranges)
+	c.set_value("lite", "routes_shown", routes)
+	c.set_value("lite", "coverage_layer", ranges)
 	c.set_value("lite", "tips_war", tips_war)
 	c.set_value("lite", "tips_front", tips_front)
+	c.set_value("lite", "jets", jets)
+	c.set_value("lite", "tips_version", TIPS_VERSION)
 	c.save(PATH)
 
 static func apply_sound() -> void:

@@ -79,3 +79,9 @@ func _draw_body() -> void:
 	draw_string(LiteGlyphs.font, Vector2(0, 64), price, HORIZONTAL_ALIGNMENT_CENTER, size.x, 11, LiteGlyphs.MUTED if affordable else LiteGlyphs.ENEMY)
 	if key != "":
 		draw_string(LiteGlyphs.font, Vector2(8, 15), key, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, LiteGlyphs.FAINT)
+
+## Hidden (itself or a parent), it does no work frame by frame: with dozens
+## of these in the menus and the HUD, their _process added up.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED or what == NOTIFICATION_READY:
+		set_process(is_visible_in_tree())

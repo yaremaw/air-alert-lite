@@ -9,6 +9,8 @@ var _clock: float = 0.0
 var _pts: Array[Vector2] = []
 var _b: LiteBatch = LiteBatch.new()
 var _parts: LiteParticles = LiteParticles.new()
+## When the bomb went off (for its flash over everything), -99 never.
+var _nuke_at: float = -99.0
 
 var _known: Dictionary = {}
 var _sim_time: float = -1.0
@@ -57,12 +59,20 @@ const CRUISE_WAKE: Color = Color(0.92, 0.94, 0.98, 0.4)
 ## dies, and its size.
 var _fires: Array[Vector4] = []
 
+## Where drones, cruise missiles and interceptors are drawn and which way
+## they point, eased out of sudden changes (a corner taken in one step); the
+## sim's own positions are only read (see LiteMotion, _track_motion).
+var motion: LiteMotion = LiteMotion.new()
+var _motion_time: float = -1.0
+
 var sim: LiteSim:
 	get: return main.sim
 var map: LiteMap:
 	get: return main.map
 
 func build() -> void:
+	# The legacy look keeps its soft smoke and fire (see LiteCmdView).
+	LiteParticles.pixel = false
 	var map_: LiteMap = map
 	var img: Image = Image.create_from_data(LiteMap.RW, LiteMap.RH, false, Image.FORMAT_R8, map_.ids)
 	_pal = Image.create_empty(256, 3, false, Image.FORMAT_RGBA8)
@@ -164,15 +174,15 @@ var _top: Node2D = null
 var _top_b: LiteBatch = LiteBatch.new()
 
 ## One copy of a weapon's glyph in its MultiMesh: where, which way, what colour.
-func _put(k: int, at: Vector2, ang: float, col: Color) -> void:
+func _put(k: int, at: Vector2, ang: float, col: Color, scale: float = 1.0) -> void:
 	var n: int = _flock_n[k]
 	var mm: MultiMesh = _flock[k]
 	if n >= mm.instance_count:
 		mm.instance_count = maxi(64, mm.instance_count * 2)
 		_flock_buf[k].resize(mm.instance_count * 12)
 	var buf: PackedFloat32Array = _flock_buf[k]
-	var cs: float = cos(ang) * WEAPON_SCALE
-	var sn: float = sin(ang) * WEAPON_SCALE
+	var cs: float = cos(ang) * WEAPON_SCALE * scale
+	var sn: float = sin(ang) * WEAPON_SCALE * scale
 	var i: int = n * 12
 	buf[i] = cs
 	buf[i + 1] = -sn
@@ -194,15 +204,15 @@ func _fill_flock() -> void:
 	for w: LiteWeapon in sim.weapons:
 		if w.arm == LiteArm.BALLISTIC or not shown_weapon(w):
 			continue
-		var at: Vector2 = w.view_pos()
-		var ang: float = w.dir.angle()
+		var at: Vector2 = vis_pos(w)
+		var ang: float = vis_angle(w)
 		if w.arm == LiteArm.DRONE:
 			# It wobbles a little in the wind.
-			_put(0, at, ang + sin(_clock * 5.0 + w.id * 1.7) * 0.08, weapon_color(w.side))
-			_put(2, at - LIFT * 5.0, ang, SHADOW)
+			_put(0, at, ang + sin(_clock * 5.0 + w.id * 1.7) * 0.08, Color(weapon_color(w.side), sure(w)), ARM_K[0])
+			_put(2, at - LIFT * 5.0, ang, SHADOW, ARM_K[0])
 		else:
-			_put(1, at, ang, weapon_color(w.side))
-			_put(3, at - LIFT * 4.0, ang, SHADOW)
+			_put(1, at, ang, Color(weapon_color(w.side), sure(w)), ARM_K[1])
+			_put(3, at - LIFT * 4.0, ang, SHADOW, ARM_K[1])
 	for k: int in 4:
 		var mm: MultiMesh = _flock[k]
 		if mm.instance_count > 0:
@@ -288,36 +298,182 @@ func _process(delta: float) -> void:
 		_shown[i] = _shown[i].lerp(target(i), k)
 		_pal.set_pixel(i, 0, _shown[i])
 	_pal_tex.update(_pal)
+	_track_motion(dt)
 	_particles(dt)
 	_update_traces()
 	queue_redraw()
 	_top.queue_redraw()
+
+## Follows this frame's drones, cruise missiles and interceptors in `motion`,
+## once, before anything is drawn: where each really is drawn, which way it
+## really points, and how far it could have moved since the last frame. While
+## the war waits (no game time passed) nothing is eased.
+func _track_motion(dt: float) -> void:
+	var sim_: LiteSim = main.sim
+	var sim_dt: float = 0.0 if _motion_time < 0.0 else maxf(0.0, sim_.time - _motion_time)
+	_motion_time = sim_.time
+	motion.begin(dt if sim_dt > 0.0 else 0.0)
+	# Drawn pointing the way they are seen to move (face_motion): a weapon
+	# drawn in its salvo's lane drifts across its track, and must turn with
+	# that drift rather than slide.
+	for w: LiteWeapon in sim_.weapons:
+		if w.alive and w.arm != LiteArm.BALLISTIC:
+			motion.track(w, w.view_pos(), w.dir.angle(), w.speed * sim_dt * 1.5 + 1.0, true)
+	var flying: Dictionary = {}
+	for i: LiteInterceptor in sim_.interceptors:
+		if i.alive:
+			flying[i] = true
+			motion.track(i, sam_pos(i), sam_tangent(i).angle(), LiteRules.INTERCEPTOR_SPEED * 1.3 * sim_dt * 2.0 + 2.0)
+	for i: Variant in _plans.keys():
+		if not flying.has(i):
+			_plans.erase(i)
+	motion.end()
+
+## An interceptor's flight as drawn, planned once at its launch and kept: a
+## curve from its launcher, up off it and over onto the point where it is
+## expected to meet its target (the sim's own pursuit flown ahead against the
+## target flying on as it is), timed by the flight that pursuit predicts. It
+## never re-aims mid-flight; only in the last third of its flight does the
+## end of its curve close onto where the target is really drawn, so the two
+## meet. The sim alone decides the hit, as before.
+class SamPlan:
+	var a: Vector2 = Vector2.ZERO
+	var top: Vector2 = Vector2.ZERO
+	var b: Vector2 = Vector2.ZERO
+	## The same point on the ground (under a ballistic missile's arc).
+	var ground: Vector2 = Vector2.ZERO
+	var time: float = 1.0
+	var born: float = 0.0
+	## The end of its curve as last drawn, held there once its target is gone.
+	var end: Vector2 = Vector2.ZERO
+
+var _plans: Dictionary = {}
+
+func _plan(i: LiteInterceptor) -> SamPlan:
+	var p: SamPlan = _plans.get(i)
+	if p != null:
+		return p
+	p = SamPlan.new()
+	var w: LiteWeapon = i.target
+	p.a = i.from.pos if i.from != null else i.pos
+	p.born = main.sim.time - i.age
+	var at: Vector2 = i.pos
+	var wp: Vector2 = w.pos
+	var prog: float = w.progress
+	var t: float = 0.0
+	var h: float = 1.0 / 30.0
+	while i.age + t < 4.0:
+		if w.arm == LiteArm.BALLISTIC:
+			prog = minf(1.0, prog + w.speed * h * LiteRules.ballistic_pace(prog) / maxf(1.0, w.length))
+			wp = w.start.lerp(w.target, prog)
+		else:
+			wp += w.dir * w.speed * h
+		var to: Vector2 = wp - at
+		var d: float = to.length()
+		var step: float = LiteRules.INTERCEPTOR_SPEED * LiteRules.sam_pace(i.age + t) * h
+		if d <= step + 3.0:
+			break
+		at += to / d * step
+		t += h
+	p.time = maxf(0.2, t + i.age)
+	p.ground = wp
+	p.b = _air(w, prog) if w.arm == LiteArm.BALLISTIC else wp + w.off
+	# A shallow climb and turn: its flight lasts half a second or so, and a
+	# tall loop would have it spin on screen.
+	p.top = lifted(p.a, clampf(p.a.distance_to(p.b) * 0.35, 14.0, 40.0))
+	p.end = p.b
+	_plans[i] = p
+	return p
+
+## How far along its planned flight an interceptor is, 0 to 1, by time.
+func sam_f(i: LiteInterceptor) -> float:
+	var p: SamPlan = _plan(i)
+	return clampf((main.sim.time - p.born) / p.time, 0.0, 1.0)
+
+## The end of its curve now: the planned meeting point, closing onto the
+## target as drawn over the last third of the flight.
+func _sam_end(i: LiteInterceptor, f: float) -> Vector2:
+	var p: SamPlan = _plan(i)
+	if i.target.alive:
+		p.end = p.b.lerp(drawn_pos(i.target), smoothstep(0.66, 1.0, f))
+	return p.end
+
+## Where an interceptor is on its planned curve (before easing).
+func sam_pos(i: LiteInterceptor) -> Vector2:
+	var p: SamPlan = _plan(i)
+	var f: float = sam_f(i)
+	var u: float = 1.0 - f
+	return p.a * (u * u) + p.top * (2.0 * u * f) + _sam_end(i, f) * (f * f)
+
+## Which way the curve runs there.
+func sam_tangent(i: LiteInterceptor) -> Vector2:
+	var p: SamPlan = _plan(i)
+	var f: float = sam_f(i)
+	var d: Vector2 = (p.top - p.a) * (2.0 * (1.0 - f)) + (_sam_end(i, f) - p.top) * (2.0 * f)
+	return d.normalized() if d.length() > 0.001 else -LIFT
+
+## The point on the ground under it.
+func sam_ground(i: LiteInterceptor) -> Vector2:
+	var p: SamPlan = _plan(i)
+	var f: float = sam_f(i)
+	var u: float = 1.0 - f
+	return p.a * (u * u + 2.0 * u * f) + p.ground * (f * f)
+
+## Where a drone or cruise missile is drawn, which way it points (an angle,
+## and as a unit vector): eased (see _track_motion).
+func vis_pos(w: LiteWeapon) -> Vector2:
+	# An enemy weapon we have lost: where we reckon it is (LiteSense).
+	if w.side != 0 and w.lost[0] > 0.0 and w.arm != LiteArm.BALLISTIC:
+		return motion.pos(w, w.believed(0) + w.off)
+	return motion.pos(w, w.view_pos())
+
+func vis_angle(w: LiteWeapon) -> float:
+	return motion.angle(w, w.dir.angle())
+
+func vis_dir(w: LiteWeapon) -> Vector2:
+	return motion.dir(w, w.dir)
+
+## Where an interceptor is drawn on its curve, and which way it points there.
+func sam_vis(i: LiteInterceptor) -> Vector2:
+	return motion.pos(i, sam_pos(i))
+
+## It faces its curve's own tangent, exactly: no easing, which would lag
+## behind a curve flown in a few frames.
+func sam_vis_dir(i: LiteInterceptor) -> Vector2:
+	return sam_tangent(i)
 
 func _update_traces() -> void:
 	var sim_: LiteSim = main.sim
 	var now: float = sim_.time
 	for i: LiteInterceptor in sim_.interceptors:
 		if i.alive:
-			var f: float = sam_frac(i)
+			var f: float = sam_f(i)
 			# Thick smoke on the climb, thinning smoothly as it turns over.
 			var k: float = 1.0 - smoothstep(SAM_CLIMB - 0.08, SAM_CLIMB + 0.3, f)
-			_feed(i, sam_point(i, f), k, SAM_SMOKE, 1.6, 4.0, SAM_FADE, now, 3.0)
+			_feed(i, sam_vis(i), k, SAM_SMOKE, 1.6, 4.0, SAM_FADE, now, 3.0)
 	for i: Variant in _sam_k.keys():
 		if not i.alive:
 			_sam_k.erase(i)
 	for w: LiteWeapon in sim_.weapons:
 		if not shown_weapon(w):
 			continue
+		# A lost track leaves no trail: nobody sees where it really goes.
+		if w.side != 0 and w.lost[0] > 0.0:
+			continue
 		match w.arm:
 			LiteArm.BALLISTIC:
+				# The enemy's leaves no line behind it: where it is headed is
+				# not known until it lands (the whole country is on alert).
+				if w.side != 0:
+					continue
 				var p: float = w.progress
 				# Thick smoke while the motor burns, thinning into a pale streak.
 				var k: float = 1.0 - smoothstep(BURN * 0.55, BURN * 1.5, p)
 				_feed(w, _air(w, p), k, Color(weapon_color(w.side).lightened(0.55), 0.6), 1.5, 2.5, BALLISTIC_FADE, now, 5.0)
 			LiteArm.CRUISE:
-				_feed(w, w.view_pos() - w.dir * 5.4, 0.0, CRUISE_WAKE, 1.0, 2.5, 2.5, now, 14.0)
+				_feed(w, vis_pos(w) - vis_dir(w) * 5.4, 0.0, CRUISE_WAKE, 1.0, 2.5, 2.5, now, 14.0)
 			_:
-				_feed(w, w.view_pos() - w.dir * 2.4, 0.0, DRONE_WAKE, 1.0, 2.5, 1.5, now, 10.0)
+				_feed(w, vis_pos(w) - vis_dir(w) * 2.4, 0.0, DRONE_WAKE, 1.0, 2.5, 1.5, now, 10.0)
 	for owner: Variant in _traces.keys():
 		if not owner.alive:
 			var done: Trace = _traces[owner]
@@ -381,6 +537,9 @@ func draw_trace(t: Trace, now: float) -> void:
 	var count: int = n + (1 if t.live and n > 0 else 0)
 	if count < 2:
 		return
+	if LiteParticles.pixel:
+		_draw_trace_pixel(t, now, n, count)
+		return
 	_rp.resize(count)
 	_rh.resize(count)
 	_rc.resize(count)
@@ -415,7 +574,201 @@ func draw_trace(t: Trace, now: float) -> void:
 			_rh[k] *= 1.0 + 1.3 * (1.0 - s)
 			run += _rp[k].distance_to(_rp[k - 1])
 			k -= 1
+	if LiteParticles.pixel:
+		# A trail of small squares, every few units along it.
+		var acc: float = 0.0
+		for k: int in range(1, count):
+			acc += _rp[k].distance_to(_rp[k - 1])
+			if acc < 2.2:
+				continue
+			acc = 0.0
+			var hw: float = maxf(0.75, roundf(_rh[k] * 0.5 / 0.75) * 0.75)
+			_b.rect(Rect2((_rp[k] / 1.5).floor() * 1.5 - Vector2(hw, hw), Vector2(hw, hw) * 2.0), _rc[k])
+		return
 	_b.ribbon(_rp, _rh, _rc)
+
+## A trail as small squares every few units along it (the command look),
+## the colour and width worked out only where a square goes: as the ribbon's
+## (see draw_trace), its cut-off end spreading and fading the same way.
+const TRAIL_STEP: float = 2.6
+
+func _draw_trace_pixel(t: Trace, now: float, n: int, count: int) -> void:
+	var span: float = 22.0 if t.smoky else 10.0
+	var total: float = 0.0
+	if not t.live:
+		for k: int in range(1, n):
+			total += t.pts[k].distance_to(t.pts[k - 1])
+	var acc: float = 0.0
+	var since: float = 0.0
+	var prev: Vector2 = t.pts[0]
+	for k: int in range(1, count):
+		var p: Vector2 = t.pts[k] if k < n else t.head
+		var d: float = p.distance_to(prev)
+		prev = p
+		acc += d
+		since += d
+		if since < TRAIL_STEP:
+			continue
+		since = 0.0
+		var age: float = clampf((now - t.born[k]) / t.fade, 0.0, 1.0) if k < n else 0.0
+		var a: float = 1.0 - age
+		var w: float = t.thick[k] if k < n else t.head_thick
+		var col:= Color(t.col, t.col.a * a)
+		var h: float = t.half + t.spread * age
+		if w > 0.001:
+			col = col.lerp(Color(0.86, 0.87, 0.9, 0.5 * a * a), w)
+			h = lerpf(h, 2.5 + 7.0 * age, w)
+		if not t.live:
+			var run: float = total - acc
+			if run < span:
+				var s: float = run / span
+				s = s * s * (3.0 - 2.0 * s)
+				col.a *= s
+				h *= 1.0 + 1.3 * (1.0 - s)
+		var hw: float = maxf(0.75, roundf(h * 0.5 / 0.75) * 0.75)
+		_b.rect(Rect2((p / 1.5).floor() * 1.5 - Vector2(hw, hw), Vector2(hw, hw) * 2.0), col)
+
+## Where a factory's chimney is, from its middle (see the sprites).
+const CHIMNEY: Vector2 = Vector2(4.0, -10.0)
+
+## Points along the front line (where the two sides' land meets), worked out
+## again when land changes hands.
+var _front_pts: PackedVector2Array = PackedVector2Array()
+var _front_key: int = -1
+
+## A point near the front, a little to either side of it; null if there is
+## no front on this map.
+func front_point() -> Variant:
+	var map_: LiteMap = main.map
+	var key: int = 0
+	for r: LiteRegion in map_.regions:
+		key = key * 3 + r.side + 1
+		key = key % 1000003
+	if key != _front_key or _front_pts.is_empty():
+		_front_key = key
+		_front_pts = PackedVector2Array()
+		const STEP: int = 3
+		for y: int in range(0, LiteMap.H - STEP, STEP):
+			for x: int in range(0, LiteMap.W - STEP, STEP):
+				var a: int = map_.cell[y * LiteMap.W + x]
+				if a == LiteMap.NONE:
+					continue
+				var r: int = map_.cell[y * LiteMap.W + x + STEP]
+				var d: int = map_.cell[(y + STEP) * LiteMap.W + x]
+				if (r != LiteMap.NONE and map_.regions[r].side != map_.regions[a].side) or (d != LiteMap.NONE and map_.regions[d].side != map_.regions[a].side):
+					_front_pts.append(Vector2(x + STEP * 0.5, y + STEP * 0.5))
+	if _front_pts.is_empty():
+		return null
+	return _front_pts[randi() % _front_pts.size()] + Vector2.from_angle(randf() * TAU) * randf_range(2.0, 12.0)
+
+## What crosses the front between operations, just to be seen: [from, to,
+## time flown, time to fly, side, arm, shot down at (share of the way, or 2)].
+var flyers: Array = []
+## Towns burning near the front (fixed for the front shown).
+var _front_fires: PackedVector2Array = PackedVector2Array()
+var _front_fires_key: int = -1
+var _flyer_puff: float = 0.0
+
+func _front_life(dt: float) -> void:
+	# Shells all along the line.
+	if randf() < dt / 0.08:
+		var at: Variant = front_point()
+		if at != null:
+			_parts.shell(at, 3.0 if randf() < 0.75 else 5.5)
+	# A few towns burning near the front.
+	if _front_fires_key != _front_key or _front_fires.is_empty():
+		_front_fires = PackedVector2Array()
+		_front_fires_key = _front_key
+		for k: int in 8:
+			var at: Variant = front_point()
+			if at != null:
+				_front_fires.append(at + Vector2(randf_range(-18, 18), randf_range(-18, 18)))
+	for f: Vector2 in _front_fires:
+		if randf() < dt / 0.25:
+			_parts.ruin(f)
+	# What is in the air is what the campaign says is going on (phase 4):
+	# an enemy offensive massing against one of our regions sends its drones
+	# and missiles there; a raid coming at our capital or our industry, its
+	# cruise missiles; our recon drones over the region picked for the next
+	# operation. Nothing flies for show.
+	var c: LiteCampaign = main.campaign
+	if c != null and flyers.size() < 14 and randf() < dt / 0.6:
+		var aims: Array = []
+		if c.counter >= 0 and main.map.regions[c.counter].side == 0:
+			aims.append([1, c.counter, LiteArm.DRONE if randf() < 0.75 else LiteArm.CRUISE])
+		if c.threat >= 0 and c.threat_group >= 0 and main.map.regions[c.threat_group].side == 0:
+			aims.append([1, c.threat_group, LiteArm.CRUISE if randf() < 0.5 else LiteArm.DRONE])
+		if main.front_pick >= 0 and main.map.regions[main.front_pick].side == 1:
+			aims.append([0, main.front_pick, LiteArm.DRONE])
+		# And the war along the front never stops: the enemy's drones at our
+		# regions on it, ours at theirs.
+		var ours: Array[int] = []
+		var theirs: Array[int] = []
+		for g: int in main.front_options:
+			(ours if main.map.regions[g].side == 0 else theirs).append(g)
+		if not theirs.is_empty():
+			aims.append([0, theirs[randi() % theirs.size()], LiteArm.DRONE])
+		for r: LiteRegion in main.map.regions:
+			if r.side == 0 and not r.city and main.map.on_front(r.id) and ours.size() < 6:
+				ours.append(r.id)
+		if not ours.is_empty():
+			aims.append([1, ours[randi() % ours.size()], LiteArm.DRONE])
+			aims.append([1, ours[randi() % ours.size()], LiteArm.DRONE if randf() < 0.7 else LiteArm.CRUISE])
+		if not aims.is_empty():
+			var a: Array = aims[randi() % aims.size()]
+			var side: int = a[0]
+			var to_r: LiteRegion = main.map.regions[int(main.front_labels.get(a[1], a[1]))]
+			var to: Vector2 = to_r.label + Vector2(randf_range(-14, 14), randf_range(-10, 10))
+			var from: Variant = _front_spot(side, 150.0)
+			if from != null and (from as Vector2).distance_to(to) > 40.0:
+				var arm: int = a[2]
+				var d: float = (from as Vector2).distance_to(to)
+				# Ours (recon) come back; theirs are shot down now and then by
+				# the air defence there.
+				flyers.append([from, to, 0.0, d / (45.0 if arm == LiteArm.DRONE else 95.0), side, arm, randf_range(0.5, 0.9) if side == 1 and randf() < 0.45 else 2.0])
+	_flyer_puff -= dt
+	var puff: bool = _flyer_puff <= 0.0
+	if puff:
+		_flyer_puff = 0.07
+	var keep: Array = []
+	for f: Array in flyers:
+		f[2] = float(f[2]) + dt
+		var k: float = float(f[2]) / float(f[3])
+		var at: Vector2 = flyer_pos(f)
+		if k >= float(f[6]):
+			_parts.pop(at, 3.0)
+			continue
+		if k >= 1.0:
+			_parts.shell(f[1], 4.0)
+			continue
+		if puff and int(f[5]) == LiteArm.CRUISE:
+			_parts.contrail(at, 0.8, 2.6, 0.8, 1.4)
+		keep.append(f)
+	flyers = keep
+
+## Where a flyer is now: along its way, a little arched.
+func flyer_pos(f: Array) -> Vector2:
+	var k: float = clampf(float(f[2]) / float(f[3]), 0.0, 1.0)
+	var a: Vector2 = f[0]
+	var b: Vector2 = f[1]
+	var n: Vector2 = (b - a).orthogonal().normalized()
+	return a.lerp(b, k) + n * sin(k * PI) * 10.0
+
+## A spot in `side`'s land within `reach` of the front, or null.
+func _front_spot(side: int, reach: float) -> Variant:
+	var at: Variant = front_point()
+	if at == null:
+		return null
+	var map_: LiteMap = main.map
+	for t: int in 12:
+		var q: Vector2 = (at as Vector2) + Vector2.from_angle(randf() * TAU) * randf_range(20.0, reach)
+		if map_.side_at(q) == side:
+			return q
+	return null
+
+## A new blast on the map (the command look keeps its crater, see LiteCmdView).
+func on_blast(_f: LiteFx) -> void:
+	pass
 
 func _particles(dt: float) -> void:
 	var sim_: LiteSim = main.sim
@@ -428,6 +781,7 @@ func _particles(dt: float) -> void:
 			continue
 		match f.kind:
 			LiteFxKind.BLAST:
+				on_blast(f)
 				_parts.blast(f.a, f.size)
 				var heavy: bool = f.size >= 20.0
 				if heavy:
@@ -437,6 +791,20 @@ func _particles(dt: float) -> void:
 					_fires.append(Vector4(f.a.x, f.a.y, sim_.time + (16.0 if heavy else 7.0), f.size * (1.0 if heavy else 0.75)))
 				if f.side == 1:
 					_shake = minf(14.0 if heavy else 9.0, _shake + f.size * (0.6 if heavy else 0.3))
+			LiteFxKind.NUKE:
+				_parts.nuke(f.a, f.size)
+				_shake = 28.0
+				_nuke_at = _clock
+				for k: int in 8:
+					var off: Vector2 = Vector2.from_angle(k * 0.8) * randf_range(10.0, f.size * 0.7)
+					_fires.append(Vector4(f.a.x + off.x, f.a.y + off.y, sim_.time + 120.0 + k * 10.0, 22.0))
+			LiteFxKind.SCORCH:
+				# A refinery hit (a scorch this big): oil burning for a long
+				# time, heavy smoke rolling off it.
+				if f.size >= 30.0:
+					for k: int in 3:
+						var off: Vector2 = Vector2.from_angle(k * 2.1) * 4.0
+						_fires.append(Vector4(f.a.x + off.x, f.a.y + off.y, sim_.time + 90.0 + k * 15.0, 18.0))
 			LiteFxKind.POP:
 				var at: Vector2 = f.a + f.b
 				_parts.pop(at, f.size)
@@ -451,7 +819,10 @@ func _particles(dt: float) -> void:
 					main.audio.play("sam_launch.wav", -13.0 if f.side == 0 else -23.0, 0.15)
 					_parts.sam_launch(f.a)
 			LiteFxKind.TRACER:
-				main.gun_shot_at[f.side] = sim_.time
+				if int(f.size) == 1:
+					main.mg_shot_at[f.side] = sim_.time
+				else:
+					main.gun_shot_at[f.side] = sim_.time
 			LiteFxKind.PUFF:
 				_parts.puff(f.a + f.b, f.size)
 	_known = known
@@ -459,14 +830,24 @@ func _particles(dt: float) -> void:
 		for s: LiteBuilding in sim_.buildings:
 			if not s.alive and sim_.time - s.dead_at < 25.0 and shown(s) and randf() < dts / 0.3:
 				_parts.ruin(s.pos)
+			# Factories at work smoke; under an air alert, barely.
+			elif s.alive and s.ready and s.kind == LiteKind.FACTORY and shown(s):
+				var calm: bool = not sim_.alert[s.region]
+				if randf() < dts / (0.35 if calm else 1.4):
+					_parts.chimney(s.pos + CHIMNEY, calm)
+		# Shelling along the front line, now here, now there.
+		if randf() < dts / 0.22:
+			var at: Variant = front_point()
+			if at != null:
+				_parts.shell(at, 2.4 if randf() < 0.8 else 4.5)
 		# Motors leave puffs of smoke hanging in the air: a SAM's, thick while it
 		# climbs; a ballistic missile's while it burns.
 		for i: LiteInterceptor in sim_.interceptors:
 			if not i.alive:
 				continue
-			var f: float = sam_frac(i)
+			var f: float = sam_f(i)
 			if f < SAM_CLIMB and randf() < dts / 0.03:
-				_parts.contrail(sam_point(i, f), 2.0, 7.0, 2.5, 4.0)
+				_parts.contrail(sam_vis(i), 2.0, 7.0, 2.5, 4.0)
 		for w: LiteWeapon in sim_.weapons:
 			if w.arm == LiteArm.BALLISTIC and shown_weapon(w) and w.progress < BURN and randf() < dts / 0.015:
 				var p: float = w.progress
@@ -483,7 +864,19 @@ func _particles(dt: float) -> void:
 			if randf() < dts / 0.06:
 				_parts.burn(Vector2(f.x, f.y), f.w, fierce, LIFT)
 		_fires.resize(k)
-	_parts.step(dts)
+	# The campaign's front between operations: no war runs there, but the
+	# front line is never quiet (in real time).
+	var front: bool = main.campaign != null and main.mission == null and main.front_open
+	if front:
+		_front_life(dt)
+	elif main.started and main.sim != null and main.sim.winner < 0 and dts > 0.0 and LiteTheme.command:
+		# During a war the front is never quite still either: now and then a
+		# shell lands somewhere along it (no troops: just where the fighting is).
+		if randf() < dts / 4.0:
+			var at: Variant = front_point()
+			if at != null:
+				_parts.shell(at, 2.5 if randf() < 0.8 else 4.0)
+	_parts.step(dt if front else dts)
 	_shake *= exp(-dt * 6.0)
 	if _shake > 0.15:
 		position = Vector2(_shake_rng.randf_range(-1, 1), _shake_rng.randf_range(-1, 1)) * _shake
@@ -495,6 +888,13 @@ func shown(b: LiteBuilding) -> bool:
 
 func shown_weapon(w: LiteWeapon) -> bool:
 	return w.alive and (w.seen[0] or main.sim.winner >= 0)
+
+## How sure the map is of an enemy weapon: 1 while seen, fading over a lost
+## track's last seconds.
+func sure(w: LiteWeapon) -> float:
+	if w.side == 0 or w.lost[0] <= 0.0 or main.sim.winner >= 0:
+		return 1.0
+	return clampf(1.0 - w.lost[0] / LiteRules.TRACK_HOLD, 0.0, 1.0) * 0.7
 
 ## Height on the map is drawn as a lift towards the top left, so the sun is up
 ## there and shadows fall to the bottom right. A weapon's own position (`pos`)
@@ -568,17 +968,17 @@ static func sam_dir(i: LiteInterceptor, f: float) -> Vector2:
 	return d.normalized() if d.length() > 0.001 else -LIFT
 
 func draw_shadow(w: LiteWeapon) -> void:
-	var ang: float = w.dir.angle()
+	var ang: float = vis_angle(w)
 	match w.arm:
 		LiteArm.DRONE:
-			LiteGlyphs.draw(_b, LiteGlyph.DRONE, w.view_pos() - LIFT * 5.0, WEAPON_SCALE, SHADOW, ang, null, false)
+			LiteGlyphs.draw(_b, LiteGlyph.DRONE, vis_pos(w) - LIFT * 5.0, WEAPON_SCALE * ARM_K[0], SHADOW, ang, null, false)
 		LiteArm.CRUISE:
-			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, w.view_pos() - LIFT * 4.0, WEAPON_SCALE, SHADOW, ang, null, false)
+			LiteGlyphs.draw(_b, LiteGlyph.CRUISE, vis_pos(w) - LIFT * 4.0, WEAPON_SCALE * ARM_K[1], SHADOW, ang, null, false)
 		_:
 			# The higher it is, the softer and fainter its shadow.
 			var k: float = clampf(w.altitude() / 150.0, 0.0, 1.0)
 			_b.disc(w.pos, 3.0 + 7.0 * k, Color(0, 0, 0, 0.16 - 0.08 * k))
-			LiteGlyphs.missile(_b, w.pos, 1.1, Color(0, 0, 0, 0.5 - 0.3 * k), ang, null, false)
+			LiteGlyphs.missile(_b, w.pos, 1.1 * ARM_K[2], Color(0, 0, 0, 0.5 - 0.3 * k), ang, null, false)
 
 func _draw() -> void:
 	var t0: float = LitePerf.now
@@ -613,19 +1013,26 @@ func draw_all() -> void:
 				b.disc(f.a, f.size * 0.3, Color(1.0, 0.4, 0.1, 0.4 * glow))
 	_parts.draw_smoke(b)
 	var now: float = sim_.time
+	var tq: float = LitePerf.now
 	for t: Trace in _old_traces:
 		draw_trace(t, now)
 	for t: Trace in _traces.values():
 		draw_trace(t, now)
-
+	LitePerf.add("map traces", tq)
+	tq = LitePerf.now
 	for w: LiteWeapon in sim_.weapons:
-		if not w.alive or w.arm != LiteArm.BALLISTIC:
+		# Our own only: where an enemy's will come down is not known.
+		if not w.alive or w.arm != LiteArm.BALLISTIC or w.side != 0:
 			continue
 		var col: Color = Color(1.0, 0.85, 0.8) if w.side == 1 else LiteGlyphs.OURS
 		var k: float = w.progress
 		b.ring(w.target, 7 + 20 * (1 - k), Color(col, 0.3 + 0.6 * k), 1.5)
 		b.disc(w.target, 2.0, Color(col, 0.8))
+	LitePerf.add("map ballistic", tq)
+	tq = LitePerf.now
 	_fill_flock()
+	LitePerf.add("map flock", tq)
+	tq = LitePerf.now
 	for w: LiteWeapon in sim_.weapons:
 		if w.arm == LiteArm.BALLISTIC and shown_weapon(w):
 			draw_shadow(w)
@@ -635,13 +1042,20 @@ func draw_all() -> void:
 		if shown_weapon(w) and not _route_raids.has(w.raid):
 			_route_raids[w.raid] = true
 			draw_route(w)
+	LitePerf.add("map routes", tq)
+	tq = LitePerf.now
 	for s: LiteBuilding in sim_.buildings:
-		if shown(s):
+		if shown(s) and s.kind != LiteKind.UNIT:
 			draw_building(s)
+	LitePerf.add("map buildings", tq)
+	tq = LitePerf.now
 	for w: LiteWeapon in sim_.weapons:
 		if shown_weapon(w):
 			draw_weapon(w)
+	LitePerf.add("map weapons", tq)
+	tq = LitePerf.now
 	b.flush()
+	LitePerf.add("map flush", tq)
 
 ## The layer over the weapons: interceptors, blasts, fires, the capitals'
 ## names and the tool under the mouse.
@@ -669,6 +1083,9 @@ func _draw_top() -> void:
 	for s: LiteBuilding in sim_.buildings:
 		if s.alive and s.kind == LiteKind.CAPITAL:
 			LiteLabels.draw_label(_top, s.pos + Vector2(0, 26), main.map.capital_name[s.side], 12, LiteGlyphs.TEXT)
+		# Enemy forces on the move (the command look draws more, see LiteCmdView).
+		elif s.alive and s.kind == LiteKind.UNIT and shown(s) and not self is LiteCmdView:
+			LiteUnit.symbol(_top, s.pos, s.unit, 6.5, 1.0, s.flash)
 	# On the front: a badge on each province that can be attacked, showing
 	# what it is; the enemy capital's with its defences.
 	if main.front_open and main.campaign != null:
@@ -758,7 +1175,7 @@ func draw_route(w: LiteWeapon) -> void:
 		return
 	if w.side == 0:
 		_pts.clear()
-		_pts.append(w.view_pos())
+		_pts.append(vis_pos(w))
 		var path: PackedVector2Array = w.path
 		for i: int in range(w.leg, path.size()):
 			_pts.append(path[i])
@@ -773,31 +1190,58 @@ const FIREBALL_MID: Color = Color(1.0, 0.55, 0.12)
 const FIREBALL_COOL: Color = Color(0.55, 0.12, 0.04)
 const SHADOW: Color = Color(0, 0, 0, 0.32)
 ## Drones and cruise missiles are drawn this big (their glyphs' own size is 1).
-const WEAPON_SCALE: float = 0.75
+## How big the flying weapons are drawn (glyphs and their shadows); purely
+## visual, the simulation's ranges are its own. 0.75 at first, a fifth smaller
+## since 2026-11-15.
+const WEAPON_SCALE: float = 0.6
+## The same reduction for what is drawn round a weapon by hand (propellers,
+## exhausts, a ballistic missile, interceptors), against their first sizes.
+const WEAPON_K: float = WEAPON_SCALE / 0.75
+## And on top of that, by weapon (drone, cruise, ballistic), what they were
+## cut by on 2026-11-15 (phase 4): drones by 30%, cruise missiles by 10%,
+## ballistic missiles by 20%. Only how they are drawn: the simulation's sizes
+## (blast, reach, what hits them) are its own (LiteRules).
+const ARM_K: Array[float] = [0.7, 0.9, 0.8]
 
 ## What is drawn of a weapon besides its glyph (drones' and cruise missiles'
 ## glyphs come from _fill_flock): a drone's propeller, a cruise missile's
 ## exhaust, a ballistic missile whole.
 func draw_weapon(w: LiteWeapon) -> void:
 	match w.arm:
+		LiteArm.DRONE when w.jet:
+			# A jet: the engine's hot core at the back and a streak of exhaust.
+			var fl: float = 0.8 + 0.2 * sin(_clock * 45.0 + w.pos.y)
+			var at: Vector2 = vis_pos(w)
+			var d: Vector2 = vis_dir(w)
+			var ck: float = WEAPON_K * ARM_K[0]
+			var tail: Vector2 = at - d * 5.6 * ck
+			_b.line_grad(tail - d * (7.0 + 4.0 * fl) * ck, tail, Color(1.0, 0.5, 0.2, 0.0), Color(1.0, 0.85, 0.55, 0.85), 1.6 * ck)
+			_b.disc(tail, 1.5 * fl * ck, Color(1.0, 0.95, 0.8, 0.9))
 		LiteArm.DRONE:
 			# It wobbles a little in the wind, and its pusher propeller spins at the tail.
 			var wob: float = sin(_clock * 5.0 + w.id * 1.7) * 0.08
-			var d: Vector2 = w.dir.rotated(wob)
-			var at: Vector2 = w.view_pos()
-			var tail: Vector2 = at - d * 2.4
+			var d: Vector2 = vis_dir(w).rotated(wob)
+			var at: Vector2 = vis_pos(w)
+			var tail: Vector2 = at - d * 2.4 * WEAPON_K * ARM_K[0]
 			var spin: float = absf(sin(_clock * 37.0 + w.id))
-			var across: Vector2 = Vector2(-d.y, d.x)
+			var across: Vector2 = Vector2(-d.y, d.x) * WEAPON_K * ARM_K[0]
 			_b.line(tail + across * 2.3 * spin, tail - across * 2.3 * spin, Color(0.9, 0.92, 0.96, 0.55), 0.8)
 		LiteArm.CRUISE:
 			# A jet engine: a hot core and a streak of exhaust behind it.
 			var fl: float = 0.8 + 0.2 * sin(_clock * 40.0 + w.pos.x)
-			var at: Vector2 = w.view_pos()
-			var tail: Vector2 = at - w.dir * 5.4
-			_b.line_grad(tail - w.dir * (8.0 + 4.0 * fl), tail, Color(1.0, 0.55, 0.2, 0.0), Color(1.0, 0.8, 0.5, 0.85), 1.8)
-			_b.disc(tail, 1.7 * fl, Color(1.0, 0.95, 0.8, 0.9))
+			var at: Vector2 = vis_pos(w)
+			var d: Vector2 = vis_dir(w)
+			var ck: float = WEAPON_K * ARM_K[1]
+			var tail: Vector2 = at - d * 5.4 * ck
+			_b.line_grad(tail - d * (8.0 + 4.0 * fl) * ck, tail, Color(1.0, 0.55, 0.2, 0.0), Color(1.0, 0.8, 0.5, 0.85), 1.8 * ck)
+			_b.disc(tail, 1.7 * fl * ck, Color(1.0, 0.95, 0.8, 0.9))
 		_:
 			draw_ballistic(w, weapon_color(w.side))
+
+## Draws a ballistic missile's body another way (a sprite: see LiteCmdView);
+## false to have the glyph drawn.
+func ballistic_body(_w: LiteWeapon, _at: Vector2, _s: float, _dir: Vector2) -> bool:
+	return false
 
 ## A ballistic missile flies a parabola. Off the launcher on a short, bright
 ## burn that leaves smoke; then it coasts, its path behind it a pale trail that
@@ -810,17 +1254,26 @@ func draw_ballistic(w: LiteWeapon, col: Color) -> void:
 	var dir: Vector2 = _air_dir(w, p)
 	var k: float = clampf(w.altitude() / 140.0, 0.0, 1.0)
 	# Nearer the camera when high up, so a little bigger.
-	var s: float = 1.1 + 0.4 * k
+	var s: float = (1.1 + 0.4 * k) * WEAPON_K * ARM_K[2]
 	# Pale, over a thin dark edge, so the arc reads over any alert colour.
 	var pale: Color = col.lightened(0.55)
-	var ahead: int = maxi(2, int(16.0 * (1.0 - p)))
+	# The rest of its arc, dotted: faint while it is high and out of reach,
+	# brighter over its final dive, where SAMs can engage it (see
+	# LiteRules.BALLISTIC_TERMINAL), with a tick where the dive begins.
+	var ahead: int = maxi(2, int(16.0 * (1.0 - p))) if w.side == 0 else 0
 	var prev: Vector2 = at
 	for j: int in range(1, ahead + 1):
-		var pt: Vector2 = _air(w, lerpf(p, 1.0, float(j) / ahead))
+		var q: float = lerpf(p, 1.0, float(j) / ahead)
+		var pt: Vector2 = _air(w, q)
 		if j % 2 == 0:
+			var dive: bool = q >= LiteRules.BALLISTIC_TERMINAL
 			b.line(prev, pt, Color(0, 0, 0, 0.14), 2.6)
-			b.line(prev, pt, Color(pale, 0.4), 1.1)
+			b.line(prev, pt, Color(pale, 0.7 if dive else 0.28), 1.3 if dive else 1.0)
 		prev = pt
+	if p < LiteRules.BALLISTIC_TERMINAL and w.side == 0:
+		var mark: Vector2 = _air(w, LiteRules.BALLISTIC_TERMINAL)
+		var across: Vector2 = _air_dir(w, LiteRules.BALLISTIC_TERMINAL).orthogonal()
+		b.line(mark - across * 4.0, mark + across * 4.0, Color(pale, 0.8), 1.3)
 	var nozzle: Vector2 = at - dir * 7.0 * s
 	if p < BURN:
 		# The motor: brightest at lift-off, burning out as it climbs.
@@ -836,23 +1289,24 @@ func draw_ballistic(w: LiteWeapon, col: Color) -> void:
 		b.line_grad(at - dir * (12.0 + 30.0 * r), at, Color(1.0, 0.55, 0.25, 0.0), Color(1.0, 0.82, 0.6, 0.8 * r), 1.5 + 2.0 * r)
 		b.disc(at + dir * 5.0 * s, 3.0 + 6.0 * r, Color(1.0, 0.55, 0.25, 0.12 + 0.25 * r))
 		b.disc(at + dir * 5.0 * s, 1.5 + 2.0 * r, Color(1.0, 0.92, 0.75, 0.3 + 0.5 * r))
-	LiteGlyphs.missile(b, at, s, col.lightened(0.35), dir.angle(), DARK)
+	if not ballistic_body(w, at, s, dir):
+		LiteGlyphs.missile(b, at, s, col.lightened(0.35), dir.angle(), DARK)
 
 ## A SAM in flight: a small white missile on a burning motor; its smoke is
 ## its trail (see Trace). Its shadow runs along the ground below it.
 func draw_interceptor(i: LiteInterceptor) -> void:
-	var f: float = sam_frac(i)
-	_b.disc(sam_shadow(i, f), 1.4, Color(0, 0, 0, 0.3))
-	var head: Vector2 = sam_point(i, f)
-	var dir: Vector2 = sam_dir(i, f)
+	var f: float = sam_f(i)
+	_b.disc(sam_ground(i), 1.4, Color(0, 0, 0, 0.3))
+	var head: Vector2 = sam_vis(i)
+	var dir: Vector2 = sam_vis_dir(i)
 	# The motor burns hardest on the climb.
 	var hard: float = 1.4 if f < SAM_CLIMB else 1.0
 	var fl: float = 0.75 + 0.25 * sin(_clock * 53.0 + i.age * 31.0)
-	var nozzle: Vector2 = head - dir * 3.3
-	_b.disc(nozzle - dir * 2.0, 3.4 * fl * hard, Color(1.0, 0.5, 0.15, 0.4))
-	_b.line(nozzle, nozzle - dir * (5.0 + 4.0 * fl) * hard, Color(1.0, 0.75, 0.35, 0.85), 2.0 * hard)
-	LiteGlyphs.missile(_b, head, 0.55, Color(0.94, 0.95, 0.98), dir.angle(), DARK)
-	_b.disc(nozzle, 1.3, Color(1.0, 0.97, 0.85))
+	var nozzle: Vector2 = head - dir * 3.3 * WEAPON_K
+	_b.disc(nozzle - dir * 2.0 * WEAPON_K, 3.4 * fl * hard * WEAPON_K, Color(1.0, 0.5, 0.15, 0.4))
+	_b.line(nozzle, nozzle - dir * (5.0 + 4.0 * fl) * hard * WEAPON_K, Color(1.0, 0.75, 0.35, 0.85), 2.0 * hard * WEAPON_K)
+	LiteGlyphs.missile(_b, head, 0.55 * WEAPON_K, Color(0.94, 0.95, 0.98), dir.angle(), DARK)
+	_b.disc(nozzle, 1.3 * WEAPON_K, Color(1.0, 0.97, 0.85))
 
 func draw_fx(f: LiteFx) -> void:
 	var b: LiteBatch = _b
@@ -893,6 +1347,36 @@ func draw_fx(f: LiteFx) -> void:
 			# A burst of rounds flying out from the gun, a flash at the muzzle,
 			# a spark where they reach.
 			var d: Vector2 = f.b - f.a
+			if f.size >= 2.0:
+				# The rotary cannon: a dense stream of rounds, a hose of
+				# light from the muzzle to the target, swaying a little,
+				# the muzzle flickering all the while.
+				var dir: Vector2 = d.normalized()
+				var side_v: Vector2 = dir.orthogonal()
+				for j: int in 12:
+					var u: float = t * 2.2 - j * 0.1
+					if u > 0.0 and u < 1.0:
+						var p: Vector2 = f.a + d * u + side_v * sin(j * 1.7 + f.a.x) * 0.8 * u
+						b.line(p - dir * 3.0, p, Color(1.0, 0.8, 0.35, 0.75), 0.8)
+						b.disc(p, 0.5, Color(1.0, 0.96, 0.8, 1.0))
+				if t < 0.7:
+					var fl: float = 1.4 + 0.8 * absf(sin(t * 90.0))
+					b.disc(f.a + dir * 2.5, fl, Color(1.0, 0.88, 0.5, 0.9))
+				if t > 0.45:
+					b.disc(f.b, 1.2 * (1.0 - t), Color(1.0, 0.9, 0.6, 0.8))
+				return
+			if f.size >= 1.0:
+				# A mobile unit's twin cannon: rounds in a stream, each a
+				# bright dot with a short streak, flying out one after another.
+				for j: int in 4:
+					var u: float = t * 1.6 - j * 0.18
+					if u > 0.0 and u < 1.0:
+						var p: Vector2 = f.a + d * u
+						b.line(p - d.normalized() * 2.2, p, Color(1.0, 0.85, 0.45, 0.8), 0.9)
+						b.disc(p, 0.7, Color(1.0, 0.95, 0.75, 1.0))
+				if t < 0.6 and fmod(t * 20.0, 2.0) < 1.0:
+					b.disc(f.a + d.normalized() * 2.5, 1.8, Color(1.0, 0.85, 0.5, 0.9))
+				return
 			b.line(f.a + d * clampf(t * 1.4 - 0.4, 0.0, 1.0), f.a + d * clampf(t * 1.4, 0.0, 1.0), Color(1.0, 0.9, 0.55, 0.95), 1.3)
 			if t < 0.35:
 				b.disc(f.a + d.normalized() * 3.0, 2.4 * (1.0 - t / 0.35), Color(1.0, 0.85, 0.5, 0.85))
@@ -933,6 +1417,39 @@ func slot_region_at(p: Vector2) -> int:
 				return r.id
 	return -1
 
+## The band along the front where nothing of ours can be launched (see
+## LiteRules.LAUNCH_STANDOFF), shaded over our land while a strike is aimed.
+var _band_tex: ImageTexture = null
+var _band_map: LiteMap = null
+var _band_sides: int = -1
+
+func _draw_no_launch() -> void:
+	var sim_: LiteSim = main.sim
+	var map_: LiteMap = main.map
+	var sides_now: int = 0
+	for r: LiteRegion in map_.regions:
+		if r.side == 0:
+			sides_now = sides_now * 31 + r.id
+	if _band_tex == null or _band_map != map_ or _band_sides != sides_now:
+		_band_map = map_
+		_band_sides = sides_now
+		var gw: int = LiteMap.W / LiteSim.FG + 1
+		var gh: int = LiteMap.H / LiteSim.FG + 1
+		var img:= Image.create(gw, gh, false, Image.FORMAT_RGBA8)
+		var col: Color = LiteGlyphs.ENEMY
+		for y: int in gh:
+			for x: int in gw:
+				var p:= Vector2(x * LiteSim.FG + LiteSim.FG / 2.0, y * LiteSim.FG + LiteSim.FG / 2.0)
+				if map_.side_at(p) != 0:
+					continue
+				var d: float = sim_.front_distance(0, p)
+				if d < LiteRules.LAUNCH_STANDOFF:
+					# Stripes, so it reads as "no", not as another territory.
+					var stripe: float = 0.10 if (x + y) % 4 < 2 else 0.05
+					img.set_pixel(x, y, Color(col, stripe + 0.12 * (1.0 - d / LiteRules.LAUNCH_STANDOFF)))
+		_band_tex = ImageTexture.create_from_image(img)
+	_top.draw_texture_rect(_band_tex, Rect2(Vector2.ZERO, Vector2((LiteMap.W / LiteSim.FG + 1) * LiteSim.FG, (LiteMap.H / LiteSim.FG + 1) * LiteSim.FG)), false)
+
 func draw_tool() -> void:
 	# Tools belong to a war under way (not to the front between operations).
 	if not main.started:
@@ -963,6 +1480,11 @@ func draw_tool() -> void:
 				else:
 					_top.draw_rect(box, LiteGlyphs.GOOD, false, 1.4)
 		return
+	if main.build_tool != null and main.build_tool == LiteMain.REPAIR_TOOL:
+		for s: LiteBuilding in main.sim.buildings:
+			if s.side == 0 and LiteStock.can_repair(s):
+				_top.draw_arc(s.pos, 9.0, 0, TAU, 24, Color(1.0, 0.75, 0.3, 0.8), 1.2, true)
+		return
 	if main.build_tool != null:
 		var k: int = main.build_tool
 		var ok: bool = sim_.can_place(0, p) and sim_.sides[0].money >= sim_.cost(0, k)
@@ -975,6 +1497,7 @@ func draw_tool() -> void:
 		_top.draw_arc(p, 8, 0, TAU, 36, col, 1.6, true)
 		LiteGlyphs.draw_ci(_top, LiteGlyphs.of(k), p, 0.95, Color(1, 1, 1, 0.85))
 	elif main.strike_tool != null:
+		_draw_no_launch()
 		var a: int = main.strike_tool
 		var at: Vector2 = main.strike_target
 		var ok: bool = map_.side_at(at) == 1
