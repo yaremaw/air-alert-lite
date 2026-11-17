@@ -578,9 +578,13 @@ func _conquest(winner: int) -> void:
 
 ## The province picked on the front (from the list or the map).
 func pick_front(province: int) -> void:
-	# The enemy capital, still locked: not yet.
+	# The enemy capital, still locked, once our land reaches it: not yet.
 	var cap: int = campaign.group_at(war_map.capital_province(1)) if campaign != null else -1
-	if province == cap and campaign.capital_locked() and not front_options.has(province):
+	var reached: bool = false
+	if province == cap:
+		for g: int in campaign.groups_next_to(war_map, cap):
+			reached = reached or war_map.regions[g].side == 0
+	if province == cap and reached and campaign.capital_locked() and not front_options.has(province):
 		var more: int = LiteCampaign.CAPITAL_AFTER - campaign.taken[0]
 		_announce("NOT READY", "Our forces are not ready to storm %s yet. Take %d more region%s first." % [war_map.capital_name[1].trim_prefix("HQ "), more, "" if more == 1 else "s"], false, 2.6)
 		audio.click()

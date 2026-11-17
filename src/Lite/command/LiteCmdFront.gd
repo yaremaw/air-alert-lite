@@ -272,23 +272,11 @@ static func _label(text: String, size: int, col: Color, font: Font) -> Label:
 	return l
 
 
-## The strip along the top of the front.
+## What holds the front's two buttons (War Council, Main menu) at the top
+## right: no panel of its own any more, the map shows under it and clicks
+## pass through to it.
 class Strip extends Control:
 	var front: LiteCmdFront = null
 
 	func _ready() -> void:
-		mouse_filter = Control.MOUSE_FILTER_STOP
-
-	func _draw() -> void:
-		var main: LiteMain = front.main
-		var c: LiteCampaign = main.campaign
-		if c == null or main.war_map == null:
-			return
-		draw_rect(Rect2(Vector2.ZERO, size), LiteTheme.BG2)
-		draw_rect(Rect2(0, size.y - 1, size.x, 1), LiteTheme.BORDER)
-		var cy: float = size.y / 2.0
-		LiteLogo.draw_mark(self, Vector2(22, cy), 10.0)
-		draw_string(LiteGlyphs.black, Vector2(40, cy + 4.5), "STRIKE ALERT", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteTheme.TEXT)
-		# Nothing else on it: the map says what is going on (the user found
-		# the operation's number, the date, the hint, the capital's count and
-		# the weapons list noise).
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
