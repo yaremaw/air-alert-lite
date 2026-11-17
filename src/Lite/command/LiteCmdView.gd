@@ -1579,6 +1579,10 @@ func _draw_front(tx: float) -> void:
 			_top.draw_line(Vector2(-sz * 0.45, 0), Vector2(-sz * 0.75, 0), Color(1.0, 0.75, 0.4, 0.7), 1.4)
 		_top.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	_draw_front_state(tx)
+	# The enemy capital, locked until enough regions are ours: a padlock on it.
+	var capg: int = main.campaign.group_at(main.map.capital_province(1))
+	if main.campaign.capital_locked() and not main.front_options.has(capg) and main.map.regions[capg].side == 1:
+		_draw_lock(main.map.capital[1] + Vector2(0, -34))
 	for id: int in main.front_options:
 		var r: LiteRegion = main.map.regions[int(main.front_labels.get(id, id))]
 		var at: Vector2 = r.label + Vector2(0, -19)
@@ -1606,6 +1610,21 @@ func _draw_front(tx: float) -> void:
 			LiteGlyphs.draw_ci(_top, glyph, at, 0.8, LiteTheme.TEXT)
 		if cap:
 			_top.draw_string(LiteGlyphs.bold, at + Vector2(14, 4), "×%d" % main.campaign.capital_defence(main.map), HORIZONTAL_ALIGNMENT_LEFT, -1, maxi(6, roundi(11.0 * tx)), LiteTheme.TEXT)
+
+## A padlock badge: a dark disc ringed in amber, the lock on it.
+func _draw_lock(at: Vector2) -> void:
+	var col: Color = LiteTheme.AMBER
+	var pulse: float = 0.5 + 0.5 * sin(_clock * 2.0)
+	_top.draw_circle(at, 12.0, Color(LiteTheme.BG, 0.94), true, -1, true)
+	_top.draw_arc(at, 12.0, 0, TAU, 32, col, 1.6, true)
+	_top.draw_arc(at, 15.0 + pulse, 0, TAU, 32, Color(col, 0.35 * (1.0 - pulse)), 1.0, true)
+	# The shackle, then the body with its keyhole.
+	_top.draw_arc(at + Vector2(0, -1.5), 3.6, PI, TAU, 16, col, 1.6, true)
+	_top.draw_line(at + Vector2(-3.6, -1.5), at + Vector2(-3.6, 0.5), col, 1.6, true)
+	_top.draw_line(at + Vector2(3.6, -1.5), at + Vector2(3.6, 0.5), col, 1.6, true)
+	_top.draw_rect(Rect2(at + Vector2(-5.5, 0.0), Vector2(11, 7.5)), col)
+	_top.draw_circle(at + Vector2(0, 2.8), 1.2, LiteTheme.BG)
+	_top.draw_line(at + Vector2(0, 3.2), at + Vector2(0, 5.6), LiteTheme.BG, 1.0)
 
 ## The unit on an option's badge, by its plot.
 const PLAN_UNIT: Dictionary = {

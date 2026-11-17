@@ -449,6 +449,60 @@ func options(map: LiteMap) -> Array[int]:
 		out.insert(0, threat_group)
 	return out
 
+## The kind of operation each enemy region on the front is this turn: one
+## on the coast gets the port, the others each a different kind (armour,
+## train, launchers, grid, depot) as far as they go round, mixed afresh
+## every turn. -1 for a region that is not an attack this turn.
+var _plots: Dictionary = {}
+var _plots_ops: int = -1
+
+func plot_for(map: LiteMap, g: int) -> int:
+	if _plots_ops != ops or not _plots.has(g):
+		_assign_plots(map)
+	return _plots.get(g, -1)
+
+func _assign_plots(map: LiteMap) -> void:
+	_plots.clear()
+	_plots_ops = ops
+	var cap: int = group_at(map.capital_province(1))
+	var opts: Array[int] = []
+	for g: int in options(map):
+		if map.regions[g].side == 1 and g != cap:
+			opts.append(g)
+	opts.sort()
+	var rng:= RandomNumberGenerator.new()
+	rng.seed = map_seed * 97 + ops * 13 + 5
+	# The port: one region on the open sea, if there is one.
+	var coastal: Array[int] = []
+	for g: int in opts:
+		var members: Array[int] = group(g)
+		if not coast_of(map, func(q: Vector2) -> bool: return members.has(map.province(map.region_at(q)))).is_empty():
+			coastal.append(g)
+	if not coastal.is_empty():
+		_plots[coastal[rng.randi_range(0, coastal.size() - 1)]] = LiteMission.PLOT_PORT
+	# The rest: each a kind not given yet this turn, in a shuffled order.
+	var kinds: Array = []
+	for g: int in opts:
+		if _plots.has(g):
+			continue
+		if kinds.is_empty():
+			kinds = [LiteMission.PLOT_COLUMN, LiteMission.PLOT_TRAIN, LiteMission.PLOT_HUNT, LiteMission.PLOT_GRID, LiteMission.PLOT_DEPOT]
+			for i: int in range(kinds.size() - 1, 0, -1):
+				var j: int = rng.randi_range(0, i)
+				var tmp: int = kinds[i]
+				kinds[i] = kinds[j]
+				kinds[j] = tmp
+		_plots[g] = kinds.pop_back()
+
+## Operations won so far: what the war's progress (new weapons, the gun of
+## the day) goes by, not operations played.
+func won_ops() -> int:
+	var n: int = 0
+	for r: int in results:
+		if r == 0:
+			n += 1
+	return n
+
 ## Which weapons both sides have in operation `op` (counted from 0): drones
 ## only at first, cruise missiles from the second, ballistic from the fourth.
 static func arms_at(op: int) -> Array:
@@ -485,20 +539,22 @@ var revealed: int = -1
 ## first operation; the sites already standing (the war's own start, see
 ## LiteSim.setup) made to match.
 func _equip(sim: LiteSim) -> void:
-	var gk: int = gun_kind_at(ops)
+	# By operations won: a lost one brings nothing new.
+	var won_: int = won_ops()
+	var gk: int = gun_kind_at(won_)
 	sim.gun_kind[0] = gk
-	sim.no_build[0] = [LiteKind.SAM] if ops < 1 else []
-	# Jet drones in place of the propeller ones: ours from the third
-	# operation, the enemy's from the fifth.
-	sim.jet_drones[0] = ops >= 2
-	if ops >= 2 and not LiteSettings.jets and not LiteSettings.dry:
+	sim.no_build[0] = [LiteKind.SAM] if won_ < 1 else []
+	# Jet drones in place of the propeller ones: ours after two operations
+	# won, the enemy's from the fifth operation.
+	sim.jet_drones[0] = won_ >= 2
+	if won_ >= 2 and not LiteSettings.jets and not LiteSettings.dry:
 		LiteSettings.jets = true
 		LiteSettings.save()
 	sim.jet_drones[1] = ops >= 4
 	for b: LiteBuilding in sim.buildings:
 		if b.side != 0 or not b.alive:
 			continue
-		if ((b.kind == LiteKind.GUN or b.kind == LiteKind.MOBILE) and b.kind != gk) or (b.kind == LiteKind.SAM and ops < 1):
+		if ((b.kind == LiteKind.GUN or b.kind == LiteKind.MOBILE) and b.kind != gk) or (b.kind == LiteKind.SAM and won_ < 1):
 			b.kind = gk
 			b.max_hp = LiteRules.max_hp(gk)
 			b.hp = b.max_hp
@@ -530,11 +586,6 @@ func capital_defence(map: LiteMap) -> int:
 ## What a province is: the same for it all campaign long.
 ## For tests (`--lite-kinds=`): every region of this kind, when 0 or more.
 static var force_character: int = -1
-
-## Whether a region's coast has a port worth an operation: about a third of
-## the coastal ones, the same all campaign long.
-func has_port(province: int) -> bool:
-	return posmod(hash(str(map_seed) + ":port:" + str(province)), 3) == 0
 
 func character(province: int) -> int:
 	if force_character >= 0:
@@ -597,57 +648,54 @@ func make_op(map: LiteMap, province: int) -> LiteMission:
 	else:
 		m.kind = LiteMission.STRIKE
 		m.days = 6.0
-		# A region on the sea (not one whose plot is its industry or its rail
-		# line): its port and the tankers loading there.
+		# The kind of operation this region is this turn (see plot_for): a
+		# port on the coast, the rest each of a different kind; the region's
+		# own kind (character) still decides what taking it brings.
+		var plot: int = plot_for(map, province)
 		var coast: Array = []
-		if m.character != LiteMission.INDUSTRY and m.character != LiteMission.LOGISTICS and has_port(province):
+		if plot == LiteMission.PLOT_PORT:
 			var members: Array[int] = m.provinces
 			coast = coast_of(map, func(q: Vector2) -> bool: return members.has(map.province(map.region_at(q))))
-		if not coast.is_empty():
-			m.plot = LiteMission.PLOT_PORT
-			m.objective = coast[1]
-			m.title = "Close the port of %s" % r
-			m.label = "Port strike"
-			m.notes.append("Destroy the oil terminal and the cargo docks. The port is ringed with SAMs and guns.")
-			m.notes.append("Cargo ships sail one by one: each one sunk earns a command point. Each one that gets away pays for another SAM battery at the port.")
-		match -1 if not coast.is_empty() else m.character:
-			LiteMission.INDUSTRY:
-				# Their armour on the move (phase 4b; the plants were once the target).
+			if coast.is_empty():
+				plot = LiteMission.PLOT_COLUMN
+		match plot:
+			LiteMission.PLOT_PORT:
+				m.plot = LiteMission.PLOT_PORT
+				m.objective = coast[1]
+				m.title = "Close the port of %s" % r
+				m.label = "Port strike"
+				m.notes.append("Destroy the oil terminal and the cargo docks. The port is ringed with SAMs and guns.")
+				m.notes.append("Cargo ships sail one by one: each one sunk earns a command point. Each one that gets away pays for another SAM battery at the port.")
+			LiteMission.PLOT_COLUMN:
 				m.plot = LiteMission.PLOT_COLUMN
 				m.title = "Stop the armour at %s" % r
 				m.label = "Interdiction"
 				m.days = 5.0
 				m.notes.append("Armoured columns are making for our border. Destroy every one on the road: if one gets across, the operation fails.")
-				m.notes.append("Strikes home in on a moving column once close. Their air defence watches the roads.")
-			LiteMission.LOGISTICS:
+			LiteMission.PLOT_TRAIN:
 				m.plot = LiteMission.PLOT_TRAIN
 				m.title = "Stop the train at %s" % r
 				m.label = "Rail strike"
 				m.days = 5.0
 				m.notes.append("An ammunition train runs for their front. Wreck the engine before it gets there; each wagon burnt pays $60.")
-			-1:
-				pass
-			LiteMission.ENERGY:
+			LiteMission.PLOT_GRID:
 				m.plot = LiteMission.PLOT_GRID
 				m.title = "Black out %s" % r
 				m.label = "Grid strike"
 				m.repair_limit = 3
 				m.notes.append("Two power stations. Knock one out and a repair crew drives out from the town to mend it: have both down at once.")
-				m.notes.append("If their crews mend %d stations, the operation fails. A crew burnt on the road buys time." % m.repair_limit)
-			LiteMission.EW:
+			LiteMission.PLOT_DEPOT:
 				m.plot = LiteMission.PLOT_DEPOT
 				m.title = "Silence the jammers at %s" % r
 				m.label = "Depot strike"
 				m.escape_limit = 3
-				m.notes.append("A jammer covers the depot that supplies their front: drones flying into its circle are often lost, missiles are not fooled.")
-				m.notes.append("A supply convoy leaves the depot for the front every few hours. If %d get through, the operation fails." % m.escape_limit)
+				m.notes.append("A jammer covers the depot that supplies their front. If %d supply convoys get through, the operation fails." % m.escape_limit)
 			_:
 				m.plot = LiteMission.PLOT_HUNT
 				m.title = "Hunt the launchers of %s" % r
 				m.label = "Launcher hunt"
-				m.salvo_limit = 6 if ops == 0 else 5
-				m.notes.append("Three mobile launchers fire from cover and move on. A salvo gives one away for half a minute; our drones overhead find them too.")
-				m.notes.append("If %d salvos land, our troops pull back and the operation fails." % m.salvo_limit)
+				m.salvo_limit = 6 if won_ops() == 0 else 5
+				m.notes.append("Three mobile launchers fire from cover and move on. If %d salvos land, the operation fails." % m.salvo_limit)
 		if m.plot == LiteMission.PLOT_PORT:
 			m.notes.append("Taking it: their oil export stops (the enemy has 10% less to spend).")
 		if m.label == "":
@@ -690,11 +738,9 @@ func make_op(map: LiteMap, province: int) -> LiteMission:
 			LiteMission.PLOT_DEPOT: m.intel.append("Convoys on the roads")
 			_: m.intel.append("Targets hidden" if m.conditions.has(LiteMission.C_HIDDEN) or m.character == LiteMission.MILITARY and m.label != "Air-defence suppression" else "Targets located")
 		m.intel.append("Radar network broken" if radar_cut > 0 else ("No radar network yet" if ops < 2 else "Radar network: hit it first"))
-	m.intel.append("Threats: %s" % arms_text(arms_at(ops)))
+	m.intel.append("Threats: %s" % arms_text(arms_at(won_ops())))
 	m.intel.append("Weather: %s" % ("storm" if m.conditions.has(LiteMission.C_STORM) else "changeable"))
-	m.notes.append("Weapons on both sides: %s." % arms_text(arms_at(ops)))
-	if ops == 1 or ops == 3:
-		m.notes.append("New: %s." % ("cruise missiles" if ops == 1 else "ballistic missiles"))
+	m.notes.append("Weapons on both sides: %s." % arms_text(arms_at(won_ops())))
 	if bonus > 0:
 		m.notes.append("Reward from the last operation: $%d." % bonus)
 	m.briefing = LiteStory.briefing(m, map, ops)
@@ -721,7 +767,7 @@ func setup(m: LiteMission, sim: LiteSim, ai: LiteAi) -> void:
 	for sd: LiteSide in sim.sides:
 		sd.morale_on = false
 	# Early in the war both sides are short of weapons, the enemy of strength.
-	var arms: Array = arms_at(ops)
+	var arms: Array = arms_at(won_ops())
 	sim.arms = [arms.duplicate(), arms.duplicate()]
 	sim.income_scale[1] *= enemy_strength(ops)
 	sim.sides[0].money = maxf(START_MONEY, minf(money, MONEY_CARRIED)) + bonus + supply + 150 * level("bonds")
@@ -766,26 +812,21 @@ func setup(m: LiteMission, sim: LiteSim, ai: LiteAi) -> void:
 			ai.war_share -= 0.1
 			# It cannot ring the targets with batteries without end.
 			ai.ad_limit = 5
-			match -1 if m.plot == LiteMission.PLOT_PORT else m.character:
-				-1: _port(m, sim, rng)
-				LiteMission.INDUSTRY: _column(m, sim, ai, rng)
-				LiteMission.LOGISTICS: _train(m, sim, rng)
-				LiteMission.ENERGY:
+			match m.plot:
+				LiteMission.PLOT_PORT: _port(m, sim, rng)
+				LiteMission.PLOT_COLUMN: _column(m, sim, ai, rng)
+				LiteMission.PLOT_TRAIN: _train(m, sim, rng)
+				LiteMission.PLOT_GRID:
 					_grid(m, sim, districts, rng)
 					m.objective = _their_town(sim)
-				LiteMission.EW:
+				LiteMission.PLOT_DEPOT:
 					_ew(m, sim, districts, rng)
 					m.next_convoy = LiteRules.DAY * 0.5
-				_:
-					if m.label == "Air-defence suppression":
-						_radars(m, sim, ai, districts, rng)
-					elif m.plot == LiteMission.PLOT_HUNT:
-						_hunt(m, sim, districts, rng)
-					else:
-						_air_base(m, sim, districts, rng)
+				LiteMission.PLOT_HUNT: _hunt(m, sim, districts, rng)
+				_: _air_base(m, sim, districts, rng)
 			# Now and then a power station feeds their air defence here: not a
 			# target, but knocking it out silences their SAMs for a day.
-			if m.character != LiteMission.ENERGY and rng.randf() < 0.5:
+			if m.plot != LiteMission.PLOT_GRID and rng.randf() < 0.5:
 				_power_aside(m, sim, rng)
 		LiteMission.CAPITAL:
 			var cap: LiteBuilding = sim.sides[1].capital

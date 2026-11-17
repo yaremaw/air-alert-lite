@@ -201,25 +201,12 @@ func show_front(c: LiteCampaign) -> void:
 	var war: LiteMap = main.war_map
 	c.clear_preview()
 	var m: LiteMission = c.preview(war, main.front_pick)
-	var head: Label = _label("OPERATION %d" % (c.ops + 1), 11, LiteTheme.BLUE, LiteGlyphs.black)
-	_box.add_child(head)
-	_box.add_child(_label(m.title, 24, LiteTheme.TEXT, LiteGlyphs.black))
+	# Just the operation's name: the plan is on the map round the region
+	# (see LiteCmdView._draw_plan), its task on the strip once it starts.
 	var holding: bool = m.defensive
-	var kind: String = "Defend" if holding else ("Capital" if m.kind == LiteMission.CAPITAL else LiteMission.character_name(m.character))
-	if m.plot != LiteMission.PLOT_NONE and m.label != "":
-		kind = "%s · %s" % [kind, m.label]
-	_box.add_child(_label(kind.to_upper(), 11, LiteTheme.RED if not holding else LiteTheme.AMBER, LiteGlyphs.bold))
-	var sum: Label = _label(m.summary(), 14, LiteTheme.TEXT, LiteGlyphs.font)
-	sum.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	sum.custom_minimum_size = Vector2(308, 0)
-	_box.add_child(sum)
-	if m.kind == LiteMission.STRIKE:
-		# The targets' icons for an attack on sites; a plan on the map for one
-		# against forces on the move (see LiteCmdView._draw_plan).
-		if m.plot == LiteMission.PLOT_NONE:
-			_box.add_child(LiteIconList.of_kinds(LiteMission.target_kinds(m.character)))
-		_box.add_child(_label("Reward: " + LiteMission.character_gain(m.character), 13, LiteTheme.GREEN, LiteGlyphs.font))
-	_box.add_child(_label("Weapons: " + LiteCampaign.arms_text(LiteCampaign.arms_at(c.ops)), 12, LiteTheme.MUTED, LiteGlyphs.font))
+	var title: Label = _label(m.title, 24, LiteTheme.TEXT, LiteGlyphs.black)
+	title.custom_minimum_size = Vector2(300, 0)
+	_box.add_child(title)
 	var row:= HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
 	_box.add_child(row)
@@ -297,45 +284,11 @@ class Strip extends Control:
 		var c: LiteCampaign = main.campaign
 		if c == null or main.war_map == null:
 			return
-		var war: LiteMap = main.war_map
 		draw_rect(Rect2(Vector2.ZERO, size), LiteTheme.BG2)
 		draw_rect(Rect2(0, size.y - 1, size.x, 1), LiteTheme.BORDER)
 		var cy: float = size.y / 2.0
 		LiteLogo.draw_mark(self, Vector2(22, cy), 10.0)
 		draw_string(LiteGlyphs.black, Vector2(40, cy + 4.5), "STRIKE ALERT", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, LiteTheme.TEXT)
-		var x: float = 158.0
-		draw_rect(Rect2(146, 9, 1, size.y - 18), LiteTheme.BORDER)
-		var head: String = "OPERATION %d" % (c.ops + 1)
-		draw_string(LiteGlyphs.bold, Vector2(x, cy + 5), head, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, LiteTheme.TEXT)
-		x += LiteGlyphs.bold.get_string_size(head, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 14.0
-		var date: String = main.clock_text(0.0, true).to_upper()
-		draw_string(LiteGlyphs.font, Vector2(x, cy + 5), date, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, LiteTheme.MUTED)
-		x += LiteGlyphs.font.get_string_size(date, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 24.0
-		# What to do now, in the middle.
-		var hint: String
-		var short: String
-		var col: Color = LiteTheme.TEXT
-		if c.counter >= 0:
-			hint = "Enemy offensive on %s: hold it, or it falls after your next operation" % c.group_name(war, c.counter)
-			short = "Offensive on %s" % c.group_name(war, c.counter)
-			col = LiteTheme.AMBER
-		else:
-			hint = "Click a marked region to plan the next operation"
-			short = "Pick a region"
-		# The enemy capital and the weapons, before the menu button.
-		var cap: String
-		if c.capital_locked():
-			cap = "%s opens after %d regions (%d/%d)" % [war.capital_name[1].to_upper(), LiteCampaign.CAPITAL_AFTER, c.taken[0], LiteCampaign.CAPITAL_AFTER]
-		else:
-			cap = "%s · %d SAM batteries" % [war.capital_name[1].to_upper(), c.capital_defence(war)]
-		var weapons: String = "WEAPONS: " + LiteCampaign.arms_text(LiteCampaign.arms_at(c.ops)).to_upper()
-		var right: float = size.x - 304.0
-		var ww: float = LiteGlyphs.bold.get_string_size(weapons, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
-		draw_string(LiteGlyphs.bold, Vector2(right - ww, cy + 4), weapons, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteTheme.MUTED)
-		var cw: float = LiteGlyphs.bold.get_string_size(cap, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
-		draw_string(LiteGlyphs.bold, Vector2(right - ww - 24 - cw, cy + 4), cap, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, LiteTheme.AMBER if c.capital_locked() else LiteTheme.RED)
-		# The hint in what room is left between: shorter when it would not fit.
-		var room: float = right - ww - 24 - cw - 24 - x
-		if LiteGlyphs.bold.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x > room:
-			hint = short
-		draw_string(LiteGlyphs.bold, Vector2(x, cy + 5), hint, HORIZONTAL_ALIGNMENT_LEFT, maxf(40.0, room), 14, col)
+		# Nothing else on it: the map says what is going on (the user found
+		# the operation's number, the date, the hint, the capital's count and
+		# the weapons list noise).

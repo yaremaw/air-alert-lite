@@ -578,6 +578,13 @@ func _conquest(winner: int) -> void:
 
 ## The province picked on the front (from the list or the map).
 func pick_front(province: int) -> void:
+	# The enemy capital, still locked: not yet.
+	var cap: int = campaign.group_at(war_map.capital_province(1)) if campaign != null else -1
+	if province == cap and campaign.capital_locked() and not front_options.has(province):
+		var more: int = LiteCampaign.CAPITAL_AFTER - campaign.taken[0]
+		_announce("NOT READY", "Our forces are not ready to storm %s yet. Take %d more region%s first." % [war_map.capital_name[1].trim_prefix("HQ "), more, "" if more == 1 else "s"], false, 2.6)
+		audio.click()
+		return
 	if front_options.has(province):
 		front_pick = province
 		front_chosen = true
@@ -628,8 +635,10 @@ func launch_operation() -> void:
 		sim.nuke_ready[0] = all_taken
 	ui.post("%s. %s" % [mission.title, mission.goal_text(sim)], LiteGlyphs.OBJECTIVE)
 	# New equipment arrives first (shown once a campaign), then the briefing.
-	var news: Array = LiteUnlock.items_at(c.ops) if c.revealed < c.ops else []
-	c.revealed = maxi(c.revealed, c.ops)
+	# New equipment comes with operations won, not played.
+	var won_: int = c.won_ops()
+	var news: Array = LiteUnlock.items_at(won_) if c.revealed < won_ else []
+	c.revealed = maxi(c.revealed, won_)
 	if sim.nuke_ready[0]:
 		news = news + [["THE BOMB", "Every region but their capital is ours. One missile, one city. Press N, pick the target. It cannot be undone.", "weapon", 3]]
 	ui.show_briefing(mission, c, true)

@@ -699,7 +699,7 @@ func show_front(c: LiteCampaign) -> void:
 	box.add_child(_text("%s: %d SAM batteries. Each region round it you take removes one." % [war.capital_name[1], d], 11, LiteGlyphs.MUTED))
 	if c.capital_locked():
 		box.add_child(_text("%s can be attacked once %d regions are taken (%d so far)." % [war.capital_name[1], LiteCampaign.CAPITAL_AFTER, c.taken[0]], 11, LiteGlyphs.YELLOW))
-	box.add_child(_text("Weapons this operation: %s." % LiteCampaign.arms_text(LiteCampaign.arms_at(c.ops)), 11, LiteGlyphs.MUTED))
+	box.add_child(_text("Weapons this operation: %s." % LiteCampaign.arms_text(LiteCampaign.arms_at(c.won_ops())), 11, LiteGlyphs.MUTED))
 	for id: int in main.front_options:
 		var picked: bool = id == main.front_pick
 		var kind: String = "Defend" if war.regions[id].side == 0 else ("Capital" if id == c.group_at(war.capital_province(1)) else LiteMission.character_short(c.character(id)))
