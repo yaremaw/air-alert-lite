@@ -803,7 +803,7 @@ class Top extends Control:
 			t += " and see %d%% as far" % roundi(env.gun_range() * 100.0)
 		t += " (night and fog hurt guns; SAMs are guided by radar and work as ever).
 "
-		t += "Drones grounded by the storm: those in the air fly home and land." if env.drones_grounded() else "Drones can fly."
+		t += "Storm: no drone can take off. Those already in the air fly on." if env.drones_grounded() else "Drones can fly."
 		return t
 
 	## The country's morale (phase 4, LiteMorale): its state in a word, a

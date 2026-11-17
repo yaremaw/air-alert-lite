@@ -1495,20 +1495,11 @@ func _secondary(b: LiteBuilding, by: int, raid: LiteRaid) -> void:
 		if o.hp <= 0:
 			destroy(o, by, raid)
 
-## A storm coming in: every drone in the air turns back home and lands
-## there (see `recalled`); none is lost to the weather.
+## A storm coming in: no drone takes off while it lasts (see launch), but
+## those already in the air fly on to their targets (they no longer turn
+## back home: the user found it odd).
 func _storm_check() -> void:
-	var g: bool = env.drones_grounded()
-	if g and not _was_grounded:
-		for w: LiteWeapon in weapons:
-			if w.alive and w.arm == LiteArm.DRONE and not w.recalled:
-				w.recalled = true
-				w.homing = false
-				w.aim = null
-				w.path = PackedVector2Array([w.start])
-				w.leg = 0
-				w.target = w.start
-	_was_grounded = g
+	_was_grounded = env.drones_grounded()
 
 ## A recalled drone home: it lands, and goes back into its side's stock.
 func land(w: LiteWeapon) -> void:

@@ -13,7 +13,7 @@ extends RefCounted
 ##   thermal sights a little less. Radars see as ever.
 ## - Fog: guns hit 30% less often still and reach a fifth less far; eyes see
 ##   little. Radars see as ever.
-## - Storm: no drone takes off, and drones in the air turn back home and land
+## - Storm: no drone takes off; drones already in the air fly on
 ##   (they are not lost); missiles fly as ever. Radars see a little less far.
 ## - Sandstorm: eyes see very little and drones find much less (dust); guns
 ##   hit less often. Drones fly. Radar matters most.
